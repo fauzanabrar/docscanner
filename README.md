@@ -27,6 +27,7 @@ The home page provides a categorized list of available utilities:
 **Video Tools**
 1. **Download Video**: Download videos directly from supported platforms via URL. For playlists, it fetches metadata and allows downloading individual videos or batch queueing with a "Download All" option. Displays real-time download speed, file size, and ETA progress. Estimated file sizes are shown before downloading. Downloads survive page refresh via localStorage and server-side job persistence. Temporary files are automatically cleaned up after 24 hours.
 2. **Compress Video**: Reduce video file size by adjusting resolution and bitrate (requires `fluent-ffmpeg`). Supports uploading large files with no limit and tracking compression frame rate progress.
+3. **Transcribe Video**: Upload a video (or audio) file and generate downloadable subtitles as a `.srt` file. Speech-to-text runs entirely on the server using a local Whisper model (`@xenova/transformers`) — no API key and no data leaves the machine. Choose the spoken language (or auto-detect) and model quality (fast `tiny` vs. more accurate `base`). An optional **"reduce background music/noise"** toggle applies an ffmpeg speech-isolation filter to pull dialogue out of noisy/musical audio. Progress is **real** at every stage (audio extraction, model download, and per-window transcription) with a live **ETA**. After transcribing, the subtitles can be **translated into many languages** (local `m2m100` model) and downloaded as a separate `.srt`. Both transcription and translation run as background jobs: closing the tab/window does not stop them, and reopening the tool resumes the same progress or completed result via localStorage + server-side job persistence.
 
 ## Implemented Features
 
@@ -44,7 +45,7 @@ The home page provides a categorized list of available utilities:
 - **Tools page** as the new home (`/`) providing a categorized selection of tools:
   - **PDF Tools**: Includes Combine, Split, and Compress (server-side utilities).
   - **Image Tools**: Includes the main DocScanner interface (`/scanner`), Resize Image (Canvas API), and Compress Image (Canvas API with live previews).
-  - **Video Tools**: Includes Download Video (with live CLI progress parsing, selective playlist video queues, and automated browser-level download triggers) and Compress Video (supporting large file storage and conversion with custom speed presets).
+  - **Video Tools**: Includes Download Video (with live CLI progress parsing, selective playlist video queues, and automated browser-level download triggers), Compress Video (supporting large file storage and conversion with custom speed presets), and Transcribe Video (local Whisper speech-to-text with optional audio denoising, real progress + ETA, and local `m2m100` subtitle translation — producing downloadable `.srt` files as resumable background jobs).
 
 
 ## Performance & Optimizations
@@ -55,6 +56,10 @@ The home page provides a categorized list of available utilities:
 - **Memory-Safe Compression**: The compression engine chunks CPU operations (`objectsPerTick: 100`) to prevent Node.js Out-of-Memory (OOM) crashes on 100MB+ PDFs.
 - **Zero-Footprint Split Streaming**: The Split tool uses Node.js Streams to pipe split PDF pages instantly into the `archiver` ZIP stream (`archive.pipe(res)`), resulting in near-zero server memory overhead.
 - **UX Progress Tracking**: The Compress tool utilizes `XMLHttpRequest` to provide real-time, byte-level upload progress tracking alongside simulated multi-phase processing animations for long-running server tasks.
+- **Non-Blocking AI Worker**: Transcription and translation both run their synchronous ONNX inference inside a single long-lived Node **worker thread** (`mediaWorker.js`), so the HTTP event loop stays fully responsive during long jobs — health checks, progress polls, and every other tool keep working. One persistent worker (rather than one spawned/terminated per job) is required because spawning a fresh onnxruntime worker after terminating one that already ran inference deadlocks `onnxruntime-node`; keeping it warm also avoids re-loading models between jobs. Cancellation is cooperative (the worker stops at the next window/batch), so a cancelled job never resurrects or leaks output.
+- **Real Progress + ETA**: The worker transcribes the audio in overlapping 30s windows and reports genuine progress after every window ("window N of M"), plus real ffmpeg audio-extraction and model-download progress and a self-calibrating **ETA** — no fake/animated bars that stall at 95%. Windowing also bounds memory and enables an anti-repetition guard (`no_repeat_ngram_size` + a post-filter) that breaks Whisper's repetition-hallucination loops.
+- **Fast Local Translation**: Subtitle translation uses a local `m2m100_418M` model with greedy decoding (`num_beams: 1`), which is ~10× faster than the model's default beam search while staying accurate for subtitles — translating cue-by-cue so the original timings are preserved.
+- **Resumable Background Jobs**: Video download, compress, and transcribe run as server-side jobs persisted to disk (`docscanner_video_jobs.json`) and keyed by a `jobId` stored in the browser's `localStorage`. Work continues even if the tab/window is closed or the page is refreshed, and the UI re-attaches to the same in-progress or completed job on return. Interrupted jobs are marked as errored on server restart, and temporary files are auto-cleaned after 24 hours.
 
 ## Development
 
@@ -81,6 +86,15 @@ The backend video download utility utilizes `yt-dlp` under the hood, which may f
 - Ubuntu/Debian: `sudo apt-get install -y python3`
 
 *(Note: If you run the app via Docker, Python is automatically installed inside the container without any manual setup needed.)*
+
+**Video Transcription (local Whisper):**
+
+The Transcribe Video tool runs speech-to-text (and translation) locally via `@xenova/transformers` (ONNX) — no API key required. Notes:
+
+- On the **first** transcription the Whisper model (~40MB for `tiny`, ~80MB for `base`) is downloaded from Hugging Face and cached under the OS temp directory, so an internet connection is required on first run. Subsequent runs are offline.
+- The **first** translation downloads the `m2m100_418M` model (~630MB) once, then it is cached and reused. CPU translation uses greedy decoding at roughly ~2s per subtitle line.
+- Native inference is provided by `onnxruntime-node`, which ships prebuilt binaries for Windows/macOS/Linux (glibc). Under **pnpm**, the build scripts for `onnxruntime-node`, `ffmpeg-static`, and `youtube-dl-exec` are allowlisted in `server/pnpm-workspace.yaml` (`onlyBuiltDependencies`) so their binaries install correctly.
+- **Docker note:** `onnxruntime-node` needs a glibc runtime. The default `node:20-alpine` image (musl) does not ship a compatible build, so for transcription in Docker use a glibc base such as `node:20-slim` (install `python3` and `ffmpeg`'s runtime deps via `apt-get` instead of `apk`).
 
 Run the app from the repository root:
 
@@ -115,7 +129,7 @@ The Docker image builds the Vite client, installs the Express server runtime dep
 - `perspective/`: four-point warp and crop output.
 - `filters/`: image enhancement and manual filter operations.
 - `export/`: client-side PDF and image export UI.
-- `tools/`: PDF Tools UI — CombineTool, SplitTool, CompressTool (server-side processing).
+- `tools/`: Tools UI (all server-side or Canvas-based processing) — PDF: `CombineTool`, `SplitTool`, `CompressTool`; Image: `ImageResizeTool`, `ImageCompressTool`; Video: `VideoDownloadTool`, `VideoCompressTool`, `VideoTranscribeTool`.
 - `auth/`: auth context scaffold for future login flows.
 - `pages/`: legacy standalone page manager component; the current document flow is handled in `ScannerPage.jsx`.
 
@@ -126,7 +140,7 @@ The Docker image builds the Vite client, installs the Express server runtime dep
 
 ### Server modules
 
-- `api/`: mounted Express routes for `/api/health`, `/api/pdf/generate`, `/api/pdf/merge`, `/api/pdf/split`, `/api/pdf/compress`, `/api/documents`, `/api/video/info`, `/api/video/download`, `/api/video/size`, `/api/video/sizes`, `/api/video/compress`, and `/api/video/job/:jobId`. Includes automatic temp file cleanup (files older than 24 hours are removed hourly).
+- `api/`: mounted Express routes for `/api/health`, `/api/pdf/generate`, `/api/pdf/merge`, `/api/pdf/split`, `/api/pdf/compress`, `/api/documents`, `/api/video/info`, `/api/video/download`, `/api/video/size`, `/api/video/sizes`, `/api/video/compress`, `/api/video/transcribe`, `/api/video/translate`, `/api/video/job/:jobId`, `/api/video/result/:jobId`, and `DELETE /api/video/job/:jobId`. Includes automatic temp file cleanup (files older than 24 hours are removed hourly). `mediaWorker.js` is the single long-lived worker-thread entry that runs local Whisper speech-to-text and `m2m100` translation (`@xenova/transformers`) off the main event loop.
 - `auth/`: planned server auth module, not currently implemented as runtime routes.
 - `pdf/`: planned extracted PDF service; current PDF logic lives in `server/src/modules/api/index.js`.
 - `storage/`: planned extracted storage service; current document route only creates a directory and returns metadata.

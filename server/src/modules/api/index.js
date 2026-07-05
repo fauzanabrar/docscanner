@@ -10,6 +10,8 @@ import { ZipArchive } from 'archiver'
 import youtubedl from 'youtube-dl-exec'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
+import { Worker } from 'worker_threads'
+import { fileURLToPath } from 'url'
 
 // Tell fluent-ffmpeg to use the static binary we just installed
 ffmpeg.setFfmpegPath(ffmpegStatic)
@@ -38,10 +40,10 @@ function loadJobs() {
     const raw = readFileSync(JOBS_FILE, 'utf-8')
     const obj = JSON.parse(raw)
     for (const [k, v] of Object.entries(obj)) {
-      // Jobs that were mid-download when server stopped are stuck — mark as error
+      // Jobs that were mid-process when server stopped are stuck — mark as error
       if (v.status === 'processing') {
         v.status = 'error'
-        v.error = 'Download interrupted (server restarted).'
+        v.error = 'Processing was interrupted (server restarted).'
       }
       // Verify done jobs still have their file
       if (v.status === 'done' && v.resultPath && !existsSync(v.resultPath)) {
@@ -60,7 +62,7 @@ loadJobs()
 
 // ─── Temp file cleanup (every hour, remove files older than 1 day) ─────────────
 const TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000
-const TEMP_PREFIXES = ['video_', 'compressed_', 'input_', 'batch_urls_']
+const TEMP_PREFIXES = ['video_', 'compressed_', 'input_', 'batch_urls_', 'transcript_']
 
 async function cleanupTempFiles() {
   try {
@@ -111,15 +113,24 @@ router.get('/video/job/:jobId', (req, res) => {
 router.get('/video/result/:jobId', (req, res) => {
   const job = videoJobs.get(req.params.jobId)
   if (!job || job.status !== 'done') return res.status(400).json({ error: 'Not ready' })
-  
-  res.download(job.resultPath, job.filename)
+  if (!job.resultPath || !existsSync(job.resultPath)) {
+    return res.status(404).json({ error: 'Result file is no longer available.' })
+  }
+
+  res.download(job.resultPath, job.filename, (err) => {
+    if (err && !res.headersSent) res.status(500).json({ error: 'Failed to download result.' })
+  })
 })
 
 router.delete('/video/job/:jobId', async (req, res) => {
-  const job = videoJobs.get(req.params.jobId)
+  const jobId = req.params.jobId
+  // Cooperatively cancel any in-flight transcription/translation for this job
+  // (the shared worker stops it at the next window/batch boundary).
+  cancelMediaJob(jobId)
+  const job = videoJobs.get(jobId)
   if (job) {
     if (job.resultPath) await unlink(job.resultPath).catch(() => {})
-    videoJobs.delete(req.params.jobId)
+    videoJobs.delete(jobId)
     saveJobs()
   }
   res.json({ success: true })
@@ -713,6 +724,431 @@ router.post('/video/compress', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('Upload error:', error)
     res.status(500).json({ error: 'Failed to start video compression.' })
+  }
+})
+
+// ─── Video Transcription (local Whisper via Transformers.js) ─────────────────────
+
+// Multilingual Whisper models exported to ONNX for transformers.js.
+const WHISPER_MODELS = {
+  tiny: 'Xenova/whisper-tiny',
+  base: 'Xenova/whisper-base'
+}
+
+// Transcription and translation both run in ONE long-lived worker thread
+// (mediaWorker.js) so the synchronous ONNX inference never blocks the HTTP event
+// loop. A single persistent worker (rather than one spawned/terminated per job)
+// is required: spawning a fresh onnxruntime worker after terminating one that
+// already ran inference deadlocks onnxruntime-node. Keeping it warm also avoids
+// re-loading models between jobs. Jobs are serialized inside the worker.
+const MEDIA_WORKER = fileURLToPath(new URL('./mediaWorker.js', import.meta.url))
+let mediaWorker = null
+const jobHandlers = new Map() // jobId -> (msg) => void
+
+function getMediaWorker() {
+  if (mediaWorker) return mediaWorker
+  mediaWorker = new Worker(MEDIA_WORKER)
+  mediaWorker.on('message', (msg) => {
+    if (!msg || !msg.jobId) return
+    const handler = jobHandlers.get(msg.jobId)
+    if (handler) handler(msg)
+  })
+  const failAll = (message) => {
+    for (const handler of jobHandlers.values()) handler({ type: 'error', message })
+    jobHandlers.clear()
+    mediaWorker = null
+  }
+  mediaWorker.on('error', (err) => failAll(`Worker crashed: ${err.message}`))
+  mediaWorker.on('exit', () => failAll('Worker stopped unexpectedly.'))
+  return mediaWorker
+}
+
+// Cooperatively cancel an in-flight worker job (the worker stops at the next
+// window/batch boundary). Safe to call for unknown jobs.
+function cancelMediaJob(jobId) {
+  if (mediaWorker) mediaWorker.postMessage({ cmd: 'cancel', jobId })
+  jobHandlers.delete(jobId)
+}
+
+// Drives one job on the shared worker: relays model-download and per-item
+// progress into the job store, computes a live ETA from real timing, and
+// resolves with the worker's result (rejects on error/cancellation).
+function runMediaJob(jobId, payload, { workingPhase, stageFor, failMessage }) {
+  return new Promise((resolve, reject) => {
+    let worker
+    try {
+      worker = getMediaWorker()
+    } catch (err) {
+      return reject(err)
+    }
+
+    let workStartedAt = 0
+    const done = (fn, arg) => { jobHandlers.delete(jobId); fn(arg) }
+
+    jobHandlers.set(jobId, (msg) => {
+      if (msg.type === 'progress' && msg.phase === 'loading-model') {
+        setJobStage(jobId, {
+          phase: 'loading-model',
+          percent: msg.percent,
+          stage: `Downloading model${msg.file ? ` (${msg.file})` : ''}...`,
+          etaSeconds: null
+        })
+      } else if (msg.type === 'progress' && msg.phase === workingPhase) {
+        // REAL progress ("item N of M") + self-calibrating ETA from timing.
+        let etaSeconds = null
+        if (workStartedAt && msg.index > 0 && msg.total > 0) {
+          const elapsed = (Date.now() - workStartedAt) / 1000
+          const perItem = elapsed / msg.index
+          etaSeconds = Math.max(0, Math.round((msg.total - msg.index) * perItem))
+        }
+        setJobStage(jobId, { phase: workingPhase, percent: msg.percent, stage: stageFor(msg.index, msg.total), etaSeconds })
+      } else if (msg.type === 'phase' && msg.phase === workingPhase) {
+        workStartedAt = Date.now()
+        setJobStage(jobId, { phase: workingPhase, percent: 0, stage: stageFor(0, 0), etaSeconds: null })
+      } else if (msg.type === 'result') {
+        done(resolve, msg)
+      } else if (msg.type === 'cancelled') {
+        done(reject, new Error('__CANCELLED__'))
+      } else if (msg.type === 'error') {
+        done(reject, new Error(msg.message || failMessage))
+      }
+    })
+
+    worker.postMessage({ jobId, ...payload })
+  })
+}
+
+function runTranscriptionInWorker(jobId, audio, modelId, language) {
+  return runMediaJob(jobId, { cmd: 'transcribe', audio, modelId, language }, {
+    workingPhase: 'transcribing',
+    stageFor: (i, t) => (t ? `Transcribing speech to text… (${i}/${t})` : 'Transcribing speech to text...'),
+    failMessage: 'Transcription failed.'
+  })
+}
+
+function runTranslationInWorker(jobId, cues, srcLang, tgtLang) {
+  return runMediaJob(jobId, { cmd: 'translate', cues, srcLang, tgtLang }, {
+    workingPhase: 'translating',
+    stageFor: (i, t) => (t ? `Translating subtitles… (${i}/${t})` : 'Translating subtitles...'),
+    failMessage: 'Translation failed.'
+  })
+}
+
+// Speech-isolation filter chain: band-limit to the voice range (cuts sub-bass
+// music rumble and high hiss), FFT-denoise steady background noise/music, then
+// gently normalise the speech level — pulls dialogue out of noisy/musical mixes.
+const DENOISE_FILTER = 'highpass=f=200,lowpass=f=3800,afftdn=nf=-25,speechnorm=e=6.25:r=0.00001'
+
+// Decode the uploaded media into a 16kHz mono Float32Array using the bundled
+// ffmpeg (raw 32-bit float PCM), which is exactly what Whisper expects.
+// `onProgress(percent)` reports real ffmpeg decode progress when available.
+// When `denoise` is true, a speech-isolation filter chain is applied.
+function extractAudioFloat32(inputPath, onProgress, denoise) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let settled = false
+    const finish = (fn, arg) => { if (!settled) { settled = true; fn(arg) } }
+
+    const command = ffmpeg(inputPath)
+      .noVideo()
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .outputFormat('f32le')
+      .on('progress', (p) => {
+        if (onProgress && typeof p.percent === 'number' && isFinite(p.percent)) {
+          onProgress(Math.max(0, Math.min(99, Math.floor(p.percent))))
+        }
+      })
+      // ffmpeg process-level failures (missing/corrupt input, no audio stream…)
+      .on('error', (err) => finish(reject, err))
+
+    if (denoise) command.audioFilters(DENOISE_FILTER)
+
+    let stream
+    try {
+      stream = command.pipe()
+    } catch (err) {
+      return finish(reject, err)
+    }
+
+    stream.on('data', (c) => chunks.push(c))
+    stream.on('error', (err) => finish(reject, err))
+    // Finalise on the *stream* end so no trailing PCM chunks are dropped.
+    stream.on('end', () => {
+      try {
+        const buffer = Buffer.concat(chunks)
+        const sampleCount = Math.floor(buffer.length / 4)
+        let floats
+        if (buffer.byteOffset % 4 === 0) {
+          // Fast path: view directly over the already-aligned backing buffer.
+          floats = new Float32Array(buffer.buffer, buffer.byteOffset, sampleCount)
+        } else {
+          // Rare: a pooled/misaligned Buffer — copy into a fresh ArrayBuffer.
+          const ab = new ArrayBuffer(sampleCount * 4)
+          new Uint8Array(ab).set(buffer.subarray(0, sampleCount * 4))
+          floats = new Float32Array(ab)
+        }
+        finish(resolve, floats)
+      } catch (err) {
+        finish(reject, err)
+      }
+    })
+  })
+}
+
+function formatSrtTime(totalSeconds) {
+  const ms = Math.max(0, Math.round(totalSeconds * 1000))
+  const pad = (n, w = 2) => String(n).padStart(w, '0')
+  const hours = Math.floor(ms / 3600000)
+  const minutes = Math.floor((ms % 3600000) / 60000)
+  const seconds = Math.floor((ms % 60000) / 1000)
+  const millis = ms % 1000
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)},${pad(millis, 3)}`
+}
+
+// Build a valid SubRip (.srt) document from merged { start, end, text } cues
+// (absolute seconds). Cues are ordered and de-overlapped defensively.
+function buildSrtFromCues(cues) {
+  const sorted = cues
+    .filter((c) => c && (c.text || '').trim())
+    .sort((a, b) => a.start - b.start)
+
+  const blocks = []
+  let index = 1
+  let prevEnd = 0
+
+  for (const cue of sorted) {
+    const text = cue.text.trim()
+    let start = cue.start
+    let end = cue.end
+    if (start == null || isNaN(start)) start = prevEnd
+    if (start < prevEnd) start = prevEnd
+    // Fall back to an estimated duration if the end is missing/invalid.
+    if (end == null || isNaN(end) || end <= start) end = start + Math.min(5, Math.max(1, text.length / 15))
+    prevEnd = end
+
+    blocks.push(`${index}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${text}`)
+    index++
+  }
+
+  return blocks.join('\n\n') + (blocks.length ? '\n' : '')
+}
+
+function setJobStage(jobId, patch) {
+  const job = videoJobs.get(jobId)
+  if (!job || job.status !== 'processing') return
+  Object.assign(job, patch)
+  videoJobs.set(jobId, job)
+}
+
+// A job is "live" only while it still exists and is processing. If the client
+// cancelled it (DELETE) mid-run we must NOT resurrect it or leak its output.
+function jobIsLive(jobId) {
+  const job = videoJobs.get(jobId)
+  return !!job && job.status === 'processing'
+}
+
+router.post('/video/transcribe', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Please upload a video or audio file to transcribe.' })
+    const { jobId, model = 'tiny', language = 'auto', denoise } = req.body
+    if (!jobId) return res.status(400).json({ error: 'jobId is required' })
+
+    const modelId = WHISPER_MODELS[model] || WHISPER_MODELS.tiny
+    const useDenoise = denoise === 'true' || denoise === true
+    const inputPath = req.file.path
+    const originalname = req.file.originalname || 'video.mp4'
+    const dotIdx = originalname.lastIndexOf('.')
+    const baseName = dotIdx > 0 ? originalname.substring(0, dotIdx) : originalname
+    const srtFilename = `${baseName}.srt`
+    const outputPath = path.join(tmpdir(), `transcript_${Date.now()}.srt`)
+
+    videoJobs.set(jobId, {
+      type: 'transcribe',
+      status: 'processing',
+      phase: 'extracting',
+      percent: 0,
+      stage: 'Extracting audio track...',
+      baseName
+    })
+    saveJobs()
+    res.json({ message: 'Transcription started', jobId })
+
+    // Process asynchronously so the job keeps running even if the client
+    // disconnects (tab/window closed). State is polled via /video/job/:jobId.
+    ;(async () => {
+      try {
+        // 1. Extract audio to a Whisper-ready Float32Array (real ffmpeg progress),
+        // optionally isolating speech from music/background noise.
+        let audio
+        try {
+          audio = await extractAudioFloat32(inputPath, (pct) => {
+            setJobStage(jobId, {
+              phase: 'extracting',
+              percent: pct,
+              stage: useDenoise ? 'Extracting & cleaning audio...' : 'Extracting audio track...'
+            })
+          }, useDenoise)
+        } catch {
+          throw new Error('Could not read audio from this file. It may be corrupt, in an unsupported format, or have no audio track.')
+        } finally {
+          await unlink(inputPath).catch(() => {})
+        }
+        if (!audio || audio.length === 0) {
+          throw new Error('No audio track was found in the uploaded file.')
+        }
+        if (!jobIsLive(jobId)) return // cancelled during extraction
+        setJobStage(jobId, { durationSeconds: Math.round(audio.length / 16000) })
+
+        // 2 + 3. Load model + transcribe inside a worker thread so the HTTP
+        // event loop stays responsive during the heavy ONNX inference. The
+        // worker reports real model-download and per-window transcription
+        // progress, and flips to the transcribing phase itself.
+        setJobStage(jobId, { phase: 'loading-model', percent: 0, stage: 'Loading transcription model...' })
+        // Only pin the language when the user chose a specific one; auto-detect
+        // omits it (passing `task` during auto-detect returns empty text).
+        const lang = language && language !== 'auto' ? language : null
+
+        let output
+        try {
+          output = await runTranscriptionInWorker(jobId, audio, modelId, lang)
+        } catch (e) {
+          console.error('Transcription worker error:', e)
+          // If the job was cancelled the worker was terminated on purpose — do
+          // not surface that as an error (the job is already gone).
+          if (!jobIsLive(jobId)) return
+          throw new Error('Could not transcribe the audio. On the first run the model download needs an internet connection; otherwise the file may be unsupported or contain no speech.')
+        }
+        if (!jobIsLive(jobId)) return // cancelled while transcribing
+
+        const srt = buildSrtFromCues((output && output.cues) || [])
+        if (!srt.trim()) {
+          throw new Error('No speech was detected in this file.')
+        }
+
+        // The job may have been cancelled while transcribing — if so, discard
+        // the result instead of resurrecting the job or leaking the .srt file.
+        if (!jobIsLive(jobId)) return
+        await writeFile(outputPath, srt, 'utf-8')
+        if (!jobIsLive(jobId)) {
+          await unlink(outputPath).catch(() => {})
+          return
+        }
+        videoJobs.set(jobId, {
+          type: 'transcribe',
+          status: 'done',
+          percent: 100,
+          resultPath: outputPath,
+          filename: srtFilename,
+          srtText: srt,
+          transcript: (output.text || '').trim()
+        })
+        saveJobs()
+      } catch (err) {
+        console.error('Transcription error:', err)
+        await unlink(inputPath).catch(() => {})
+        // Only report the error if the job still exists (don't resurrect one the
+        // client explicitly cancelled).
+        if (videoJobs.has(jobId)) {
+          videoJobs.set(jobId, { type: 'transcribe', status: 'error', error: err.message || 'Failed to transcribe video.' })
+          saveJobs()
+        }
+      }
+    })()
+  } catch (error) {
+    console.error('Transcribe route error:', error)
+    if (req.file && req.file.path) await unlink(req.file.path).catch(() => {})
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to start transcription.' })
+  }
+})
+
+// ─── Subtitle Translation (local m2m100 via Transformers.js) ─────────────────────
+
+// Parse a SubRip (.srt) document back into { start, end, text } cues.
+function parseSrt(srt) {
+  const cues = []
+  if (!srt) return cues
+  const timeRe = /(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/
+  const blocks = srt.replace(/\r/g, '').split(/\n\s*\n/)
+  for (const block of blocks) {
+    const lines = block.split('\n')
+    const idx = lines.findIndex((l) => timeRe.test(l))
+    if (idx === -1) continue
+    const m = lines[idx].match(timeRe)
+    const start = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4]) / 1000
+    const end = (+m[5]) * 3600 + (+m[6]) * 60 + (+m[7]) + (+m[8]) / 1000
+    const text = lines.slice(idx + 1).join(' ').replace(/\s+/g, ' ').trim()
+    if (text) cues.push({ start, end, text })
+  }
+  return cues
+}
+
+router.post('/video/translate', async (req, res) => {
+  try {
+    const { jobId, srtText, srcLang = 'en', tgtLang, baseName = 'subtitles' } = req.body
+    if (!jobId) return res.status(400).json({ error: 'jobId is required' })
+    if (!tgtLang) return res.status(400).json({ error: 'A target language is required.' })
+    if (!srtText || !srtText.trim()) return res.status(400).json({ error: 'No subtitles provided to translate.' })
+
+    const cues = parseSrt(srtText)
+    if (cues.length === 0) return res.status(400).json({ error: 'Could not read any subtitles to translate.' })
+
+    const safeBase = String(baseName).replace(/[\\/:*?"<>|]+/g, '').trim() || 'subtitles'
+    const outName = `${safeBase}.${tgtLang}.srt`
+    const outputPath = path.join(tmpdir(), `transcript_${Date.now()}.srt`)
+
+    videoJobs.set(jobId, {
+      type: 'translate',
+      status: 'processing',
+      phase: 'loading-model',
+      percent: 0,
+      stage: 'Loading translation model...',
+      targetLang: tgtLang
+    })
+    saveJobs()
+    res.json({ message: 'Translation started', jobId })
+
+    // Runs in the translation worker thread (background job; survives tab close).
+    ;(async () => {
+      try {
+        let result
+        try {
+          result = await runTranslationInWorker(jobId, cues, srcLang || 'en', tgtLang)
+        } catch (e) {
+          console.error('Translation worker error:', e)
+          if (!jobIsLive(jobId)) return
+          throw new Error('Could not translate the subtitles. On the first run the translation model download needs an internet connection.')
+        }
+        if (!jobIsLive(jobId)) return
+
+        const srt = buildSrtFromCues((result && result.cues) || [])
+        if (!srt.trim()) throw new Error('Translation produced no text.')
+
+        if (!jobIsLive(jobId)) return
+        await writeFile(outputPath, srt, 'utf-8')
+        if (!jobIsLive(jobId)) { await unlink(outputPath).catch(() => {}); return }
+
+        videoJobs.set(jobId, {
+          type: 'translate',
+          status: 'done',
+          percent: 100,
+          resultPath: outputPath,
+          filename: outName,
+          srtText: srt,
+          targetLang: tgtLang
+        })
+        saveJobs()
+      } catch (err) {
+        console.error('Translation error:', err)
+        if (videoJobs.has(jobId)) {
+          videoJobs.set(jobId, { type: 'translate', status: 'error', error: err.message || 'Failed to translate subtitles.' })
+          saveJobs()
+        }
+      }
+    })()
+  } catch (error) {
+    console.error('Translate route error:', error)
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to start translation.' })
   }
 })
 

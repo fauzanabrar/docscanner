@@ -2,9 +2,11 @@
 
 ## Purpose
 
-Provides the PDF Tools UI for combining, splitting, and compressing existing PDF files. All processing happens server-side; the client handles file selection, configuration, and download.
+Provides the Tools UI for the PDF, Image, and Video utilities surfaced on the Tools page. PDF and Video tools process server-side; Image tools (resize/compress) process in-browser via the Canvas API. The client handles file selection, configuration, progress, and download.
 
 ## Components
+
+### PDF tools (server-side)
 
 - `CombineTool.jsx`
   Upload 1+ PDF files, extract individual pages into a visual grid, rearrange them via high-performance native drag-and-drop or position dropdowns, and merge into a single PDF download.
@@ -15,16 +17,36 @@ Provides the PDF Tools UI for combining, splitting, and compressing existing PDF
 - `CompressTool.jsx`
   Upload a single PDF, compress via structural optimization, display original vs compressed size and percentage reduction.
 
+### Image tools (client-side, Canvas API)
+
+- `ImageResizeTool.jsx`
+  Resize an image to exact width/height or by maintaining aspect ratio, then download.
+
+- `ImageCompressTool.jsx`
+  Reduce image file size by lowering quality or converting between JPEG/WebP, with live preview and estimated size.
+
+### Video tools (server-side background jobs)
+
+- `VideoDownloadTool.jsx`
+  Download videos/playlists via URL (yt-dlp) with real-time speed/size/ETA, size estimation, and `localStorage`-backed persistence across refreshes.
+
+- `VideoCompressTool.jsx`
+  Upload a video and re-encode it to a smaller size (resolution/bitrate/format presets) via server-side `fluent-ffmpeg`, with upload + processing progress.
+
+- `VideoTranscribeTool.jsx`
+  Upload a video/audio file and generate downloadable `.srt` subtitles via server-side local Whisper (`@xenova/transformers`). Lets the user pick the spoken language (or auto-detect), model quality (`tiny`/`base`), and an optional **"reduce background music/noise"** toggle (server-side ffmpeg speech-isolation filter). Uploads via `XMLHttpRequest` with byte-level progress, then polls `/api/video/job/:jobId` for **real** background progress — audio extraction, model download, and per-window transcription (`window N of M`) mapped into a single monotonic bar with a live **ETA** (no fake/stalling animation). After transcribing, a **translate panel** lets the user pick source/target languages and generate a translated `.srt` (local `m2m100`) as a second background job. Both jobs store their `jobId` in `localStorage`, so closing the tab/window does not stop them and reopening the tool resumes the same progress or completed result. Results are shown inline (with a Copy button) and downloadable from `/api/video/result/:jobId`.
+
 ## Implemented behavior
 
 - Combine and Split tools use `fetch()` to POST multipart form data.
-- Compress tool uses `XMLHttpRequest` to provide real-time byte-level upload progress tracking and a simulated multi-phase processing animation for large files.
-- File inputs accept `application/pdf` only.
+- Compress (PDF), Compress Video, and Transcribe use `XMLHttpRequest` to provide real-time byte-level upload progress tracking; PDF compress adds a simulated multi-phase processing animation for large files.
+- PDF tool file inputs accept `application/pdf` only; video tools accept `video/*,audio/*` (and allow empty-MIME containers such as `.mkv`).
 - Combine tool parses PDFs locally (using `pdfjs-dist`) to generate visual page thumbnails asynchronously. It supports adding multiple files incrementally and allows reordering at the specific page-level via native drag-and-drop or dropdowns.
 - Split tool supports three modes: custom ranges (`1-3,5,7-9`), every page (each page → separate file), and extract specific pages.
 - Compress tool reads `X-Original-Size`, `X-Compressed-Size`, and `X-Reduction-Percent` response headers to display stats.
+- Video Compress and Transcribe run as server-side background jobs: the client stores a `jobId` in `localStorage` and polls `GET /api/video/job/:jobId`, so progress/results survive closing the tab/window or refreshing, and resume on return. Async callbacks are guarded against setState-after-unmount.
 - All tools show loading state during processing and user-facing error messages on failure.
-- Download is triggered via a temporary `<a>` element with `download` attribute and `blob:` URL.
+- Download is triggered via a temporary `<a>` element (PDF/image via `blob:` URL; video/transcribe via the `/api/video/result/:jobId` download link).
 
 ## Server endpoints used
 
@@ -32,9 +54,16 @@ Provides the PDF Tools UI for combining, splitting, and compressing existing PDF
 |------|----------|----------|
 | Combine | `POST /api/pdf/merge` | Merged PDF |
 | Split | `POST /api/pdf/split` | PDF or ZIP |
-| Compress | `POST /api/pdf/compress` | Compressed PDF + headers |
+| Compress (PDF) | `POST /api/pdf/compress` | Compressed PDF + headers |
+| Download Video | `POST /api/video/download` → poll `GET /api/video/job/:jobId` → `GET /api/video/result/:jobId` | Background job → video/audio file |
+| Compress Video | `POST /api/video/compress` → poll `GET /api/video/job/:jobId` → `GET /api/video/result/:jobId` | Background job → re-encoded video |
+| Transcribe | `POST /api/video/transcribe` → poll `GET /api/video/job/:jobId` → `GET /api/video/result/:jobId` | Background job → `.srt` (text inline + download) |
+| Translate subtitles | `POST /api/video/translate` (JSON) → poll `GET /api/video/job/:jobId` → `GET /api/video/result/:jobId` | Background job → translated `.srt` |
+
+Image Resize/Compress do not call the server — they process entirely in the browser via the Canvas API.
 
 ## Current status
 
-- All three tools are fully functional.
-- Compression is structural only (object stream optimization); image recompression is not yet implemented.
+- PDF, Image, and Video tools are all functional.
+- PDF compression is structural only (object stream optimization); image recompression is not yet implemented.
+- Video transcription (Whisper) and subtitle translation (`m2m100`) use local models (no API key); models download on first use and are cached (see the root `README.md` prerequisites). Both run in one shared worker thread and support optional audio denoising, real progress + ETA, and resumable background jobs.

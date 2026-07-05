@@ -24,6 +24,33 @@ Holds the currently mounted Express API routes for the app.
 - `POST /api/pdf/compress`
   Accepts a single PDF file (`file` field). Runs a two-pass structural optimization: repacks objects using `useObjectStreams` and batched object writing to eliminate redundancy. Returns the compressed PDF with `X-Original-Size`, `X-Compressed-Size`, and `X-Reduction-Percent` response headers.
 
+- `POST /api/video/info`
+  Accepts `{ url }`. Returns yt-dlp metadata for a single video, or a flat listing for a playlist URL.
+
+- `POST /api/video/size` and `POST /api/video/sizes`
+  Estimate the approximate download size for a single URL, or a batch of URLs, for the chosen `downloadFormat`.
+
+- `POST /api/video/download`
+  Accepts `{ url, downloadFormat, jobId }`. Starts a background yt-dlp download (video, or `mp3`/`webm` variants), parsing live progress (percent, total size, speed, ETA) into the job store. Responds immediately with `{ jobId }`.
+
+- `POST /api/video/compress`
+  Accepts a video upload (`file`) plus `jobId`, `quality`, `speed`, `outFormat`, `removeAudio`, and optional `duration`. Re-encodes via `fluent-ffmpeg` in the background, reporting timemark/percent progress. Responds immediately with `{ jobId }`.
+
+- `POST /api/video/transcribe`
+  Accepts a single video/audio file (`file` field) plus `jobId`, `model` (`tiny` | `base`), `language` (`auto` or an ISO code), and `denoise` (`true`/`false`). Responds immediately with `{ jobId }` and processes in the background: extracts 16kHz mono PCM audio with the bundled `ffmpeg-static` (reporting real ffmpeg progress; `denoise` adds a `highpass`/`lowpass`/`afftdn`/`speechnorm` speech-isolation chain), then runs a local Whisper model via `@xenova/transformers` **inside the shared `mediaWorker.js` worker thread** so the synchronous ONNX inference never blocks the HTTP event loop, and builds a SubRip (`.srt`) document. The worker transcribes in overlapping 30s windows and reports **real progress** ("window N of M") + a live **ETA** after each window; a `no_repeat_ngram_size`/`max_new_tokens` setting plus a post-filter guard against Whisper repetition hallucinations. When a specific language is chosen, `language`/`task` are pinned per window (fresh opts each call — transformers.js mutates the opts with `forced_decoder_ids`); for `auto` they are omitted (passing `task` during auto-detect returns empty text).
+
+- `POST /api/video/translate`
+  JSON body: `jobId` (a new id for the translation job), `srtText` (the source subtitles), `srcLang`, `tgtLang` (ISO codes), and `baseName`. Responds immediately with `{ jobId }` and translates the parsed cues **line-by-line** (preserving timings) with a local `m2m100_418M` model in the same worker (greedy decoding for speed), then writes `<baseName>.<tgtLang>.srt`. Reports real per-cue progress + ETA.
+
+- `GET /api/video/job/:jobId`
+  Returns the current job record (`status`, `phase`, `percent`, `stage`, `etaSeconds`, `durationSeconds`, and — when done — `srtText`, `transcript`/`targetLang`, `filename`). Used for background-job polling; jobs survive page/tab close and server restart via `docscanner_video_jobs.json`.
+
+- `GET /api/video/result/:jobId`
+  Streams the finished result file (the generated `.srt`) as an attachment download.
+
+- `DELETE /api/video/job/:jobId`
+  Cooperatively cancels any in-flight transcription/translation for the job (the shared worker stops at the next window/batch boundary — no resurrection, no leaked output) and removes the job and its result file.
+
 - `POST /api/documents`
   Creates a document id, ensures an upload directory exists, and returns document metadata.
 
@@ -34,32 +61,16 @@ Holds the currently mounted Express API routes for the app.
 
 - `pdf-lib` — PDF creation, merging, splitting, and structural compression.
 - `archiver` — ZIP packaging for multi-file split output (imported via `createRequire` for ESM compatibility).
-- `multer` — multipart file upload handling with memory storage (50MB limit).
+- `multer` — multipart file upload handling with memory storage (50MB limit) and disk storage for large video uploads.
+- `fluent-ffmpeg` + `ffmpeg-static` — audio extraction (and video compression); bundled ffmpeg binary, no manual install.
+- `@xenova/transformers` — local Whisper speech-to-text and `m2m100` translation (ONNX via `onnxruntime-node`), both run in the shared `mediaWorker.js` worker thread; models download and cache on first use.
+- `youtube-dl-exec` — yt-dlp binary wrapper for the video download/size routes.
 
-## Current status
+## Background jobs & cleanup
 
-- This router is the real server implementation today.
-- There is no mounted `/api/auth/*` router yet.
-- There is no `/api/upload/image` endpoint in the current server.
-# API Module
-
-## Purpose
-
-Holds the currently mounted Express API routes for the app.
-
-## Implemented routes
-
-- `GET /api/health`
-  Returns `{ status, timestamp }` for liveness checks.
-
-- `POST /api/pdf/generate`
-  Accepts up to 20 uploaded images through Multer memory storage, embeds JPEG or PNG images into a `pdf-lib` document, and returns the generated PDF as a download.
-
-- `POST /api/documents`
-  Creates a document id, ensures an upload directory exists, and returns document metadata.
-
-- `GET /api/documents`
-  Returns an empty `documents` array placeholder.
+- Video download, compress, and transcribe run as background jobs tracked in an in-memory store and persisted to `docscanner_video_jobs.json` (OS temp dir). Jobs are keyed by a client-supplied `jobId`, so they survive page/tab close and are re-attached by polling `GET /api/video/job/:jobId`.
+- On server restart, any job still marked `processing` is flipped to `error` (interrupted), and `done` jobs whose result file is missing are dropped.
+- A cleanup task runs hourly, removing prefixed temp files (`video_`, `compressed_`, `input_`, `batch_urls_`, `transcript_`) older than 24 hours and purging stale jobs.
 
 ## Current status
 
