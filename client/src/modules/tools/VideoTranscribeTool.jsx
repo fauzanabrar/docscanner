@@ -74,6 +74,7 @@ function VideoTranscribeTool() {
   // component has unmounted (e.g. the user navigated back to "All tools" while a
   // job is still running). The server keeps working regardless.
   const mountedRef = useRef(true)
+  const xhrRef = useRef(null)
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
@@ -82,11 +83,11 @@ function VideoTranscribeTool() {
   // Poll the transcription job so progress/results survive a refresh or the
   // tab/window being closed and reopened — the server keeps working regardless.
   useEffect(() => {
-    if (!jobId) return
+    if (!jobId || phase === 'uploading' || phase === 'done') return
     setProcessing(true)
-    if (phase !== 'uploading') setPhase('processing')
 
-    const interval = setInterval(async () => {
+    let intervalId
+    const checkJob = async () => {
       try {
         const res = await fetch(`/api/video/job/${jobId}`)
         if (!mountedRef.current) return
@@ -96,14 +97,17 @@ function VideoTranscribeTool() {
             setError(data.error || 'Transcription failed.')
             setProcessing(false); setPhase(''); setJobId(null)
             localStorage.removeItem('transcribeJobId')
-            clearInterval(interval)
+            if (intervalId) clearInterval(intervalId)
           } else if (data.status === 'done') {
             setSrtText(data.srtText || '')
             setSrtBaseName((data.filename || 'subtitles.srt').replace(/\.srt$/i, '') || 'subtitles')
             setPercent(100); setStage('Transcription complete!'); setPhase('done')
             setProcessing(false)
-            clearInterval(interval)
+            if (intervalId) clearInterval(intervalId)
           } else {
+            if (phase !== 'processing') {
+              setPhase('processing')
+            }
             setStage(data.stage || 'Processing...')
             setEta(typeof data.etaSeconds === 'number' ? data.etaSeconds : null)
             if (typeof data.durationSeconds === 'number') setDuration(data.durationSeconds)
@@ -120,21 +124,27 @@ function VideoTranscribeTool() {
         } else if (res.status === 404) {
           setProcessing(false); setPhase(''); setJobId(null)
           localStorage.removeItem('transcribeJobId')
-          clearInterval(interval)
+          if (intervalId) clearInterval(intervalId)
         }
       } catch (e) { /* ignore transient poll errors */ }
-    }, 1000)
+    }
 
-    return () => clearInterval(interval)
+    checkJob()
+    intervalId = setInterval(checkJob, 1000)
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId])
+  }, [jobId, phase])
 
   // Poll the translation job (also a resumable background job).
   useEffect(() => {
     if (!translateJobId) return
     setTranslating(true)
 
-    const interval = setInterval(async () => {
+    let intervalId
+    const checkTranslate = async () => {
       try {
         const res = await fetch(`/api/video/job/${translateJobId}`)
         if (!mountedRef.current) return
@@ -144,13 +154,13 @@ function VideoTranscribeTool() {
             setTranslateError(data.error || 'Translation failed.')
             setTranslating(false); setTranslateJobId(null)
             localStorage.removeItem('translateJobId')
-            clearInterval(interval)
+            if (intervalId) clearInterval(intervalId)
           } else if (data.status === 'done') {
             setTranslatedSrt(data.srtText || '')
             if (data.targetLang) setTranslatedLang(data.targetLang)
             setTranslatePercent(100); setTranslateStage('Translation complete!')
             setTranslating(false)
-            clearInterval(interval)
+            if (intervalId) clearInterval(intervalId)
           } else {
             setTranslateStage(data.stage || 'Translating...')
             setTranslateEta(typeof data.etaSeconds === 'number' ? data.etaSeconds : null)
@@ -164,12 +174,17 @@ function VideoTranscribeTool() {
         } else if (res.status === 404) {
           setTranslating(false); setTranslateJobId(null)
           localStorage.removeItem('translateJobId')
-          clearInterval(interval)
+          if (intervalId) clearInterval(intervalId)
         }
       } catch (e) { /* ignore transient poll errors */ }
-    }, 1000)
+    }
 
-    return () => clearInterval(interval)
+    checkTranslate()
+    intervalId = setInterval(checkTranslate, 1000)
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [translateJobId])
 
@@ -197,6 +212,7 @@ function VideoTranscribeTool() {
     formData.append('jobId', newJobId)
 
     const xhr = new XMLHttpRequest()
+    xhrRef.current = xhr
     xhr.open('POST', '/api/video/transcribe')
     xhr.upload.onprogress = (event) => {
       if (!mountedRef.current) return
@@ -232,6 +248,7 @@ function VideoTranscribeTool() {
   }
 
   const handleClearJob = async () => {
+    if (xhrRef.current) { xhrRef.current.abort(); xhrRef.current = null }
     if (jobId) await fetch(`/api/video/job/${jobId}`, { method: 'DELETE' }).catch(() => {})
     if (translateJobId) await fetch(`/api/video/job/${translateJobId}`, { method: 'DELETE' }).catch(() => {})
     setJobId(null); localStorage.removeItem('transcribeJobId')
@@ -369,10 +386,10 @@ function VideoTranscribeTool() {
                 <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
                     <strong>{translateStage || 'Translating...'}</strong>
-                    <span>{Math.min(translatePercent, 99)}%</span>
+                    <span>{translatePercent}%</span>
                   </div>
                   <div style={{ width: '100%', height: '8px', background: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                    <div style={{ width: `${Math.min(translatePercent, 99)}%`, height: '100%', background: '#1976d2', transition: 'width 0.5s ease' }} />
+                    <div style={{ width: `${translatePercent}%`, height: '100%', background: '#1976d2', transition: 'width 0.5s ease' }} />
                   </div>
                   {translateEta != null && (
                     <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#666' }}>Estimated time left: ~{fmtDur(translateEta)}</div>
@@ -453,9 +470,15 @@ function VideoTranscribeTool() {
 
           {processing && phase === 'uploading' && (
             <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '0.9rem' }}>
                 <strong>Uploading file...</strong>
-                <span>{uploadProgress}%</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <span>{uploadProgress}%</span>
+                  <button type="button" onClick={handleClearJob}
+                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', backgroundColor: '#fff', color: '#d32f2f', border: '1px solid #d32f2f', borderRadius: '4px', cursor: 'pointer', fontWeight: '600' }}>
+                    Cancel
+                  </button>
+                </div>
               </div>
               <div style={{ width: '100%', height: '8px', background: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
                 <div style={{ width: `${uploadProgress}%`, height: '100%', background: '#1976d2', transition: 'width 0.2s' }} />
@@ -465,12 +488,18 @@ function VideoTranscribeTool() {
 
           {processing && phase === 'processing' && (
             <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '0.9rem' }}>
                 <strong>{stage}</strong>
-                <span>{Math.min(barPercent, 99)}%</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <span>{barPercent}%</span>
+                  <button type="button" onClick={handleClearJob}
+                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', backgroundColor: '#fff', color: '#d32f2f', border: '1px solid #d32f2f', borderRadius: '4px', cursor: 'pointer', fontWeight: '600' }}>
+                    Cancel
+                  </button>
+                </div>
               </div>
               <div style={{ width: '100%', height: '8px', background: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(barPercent, 99)}%`, height: '100%', background: '#1976d2', transition: 'width 0.5s ease' }} />
+                <div style={{ width: `${barPercent}%`, height: '100%', background: '#1976d2', transition: 'width 0.5s ease' }} />
               </div>
               <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#666' }}>
                 {duration != null && <span>Audio length: {fmtDur(duration)}</span>}

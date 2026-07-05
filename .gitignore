@@ -3,3 +3,10 @@ dist/
 .env
 *.log
 .DS_Store
+cookies.txt
+db.sqlite
+db.sqlite-journal
+uploads/
+server/public/
+
+

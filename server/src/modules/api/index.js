@@ -15,11 +15,12 @@ import ffmpegStatic from 'ffmpeg-static'
 import { Worker } from 'worker_threads'
 import { execFile } from 'child_process'
 import { fileURLToPath } from 'url'
-import { fileURLToPath } from 'url'
 
 // Tell fluent-ffmpeg to use the static binary we just installed
 ffmpeg.setFfmpegPath(ffmpegStatic)
 
+const YOUTUBE_COOKIES = process.env.YOUTUBE_COOKIES || ''
+const YTDLP_BIN = '/usr/local/bin/yt-dlp'
 const router = Router()
 const MAX_UPLOAD_BYTES = Math.min(
   2 * 1024 * 1024 * 1024,
@@ -499,8 +500,13 @@ function getDownloadArgs(url, downloadFormat, filepath) {
     '-o', filepath,
     '--ffmpeg-location', ffmpegStatic,
     '--no-playlist',
-    '--newline'
+    '--newline',
+    '--js-runtimes', 'node',
+    '--extractor-args', 'youtube:player_client=web'
   ]
+  if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) {
+    args.push('--cookies', YOUTUBE_COOKIES)
+  }
   if (isAudio) {
     args.push('--extract-audio', '--audio-format', 'mp3', '-f', 'bestaudio/best')
   } else if (downloadFormat === 'best') {
@@ -782,56 +788,85 @@ async function runUploadedAudioConversion({ jobId, inputPath, outputPath, filena
 }
 
 async function runUrlAudioConversion({ jobId, url, outputTemplate, outputPath, filename, format, bitrate }) {
-  const subprocess = youtubedl.exec(url, {
-    output: outputTemplate,
-    ffmpegLocation: ffmpegStatic,
-    noPlaylist: true,
-    newline: true,
-    format: 'bestaudio/best',
-    extractAudio: true,
-    audioFormat: format,
-    audioQuality: format === 'wav' ? undefined : bitrate.toUpperCase(),
-    maxFilesize: `${MAX_UPLOAD_MEGABYTES}M`,
-    socketTimeout: 30,
-    retries: 3,
-    fragmentRetries: 3,
-    fileAccessRetries: 3
-  }, { windowsHide: true })
+  const { spawn } = await import('child_process')
+  const playerClients = ['web', 'android_vr', 'ios', 'mweb', 'tv', null]
+  let lastError = null
 
-  const activeJob = trackActiveJob(jobId, subprocess, [outputPath])
+  for (const client of playerClients) {
+    const activeJob = activeVideoJobs.get(jobId)
+    if (activeJob?.didTimeout()) break
 
-  let errorOutput = ''
-  const parseProgress = text => {
-    for (const line of text.replace(/\r/g, '\n').split('\n')) {
-      const progressMatch = line.match(/\[download\]\s+([\d.]+)%/)
-      if (progressMatch) {
-        updateAudioJob(jobId, {
-          progress: Math.min(94, Math.max(1, Math.floor(Number(progressMatch[1]) * 0.94))),
-          detail: 'Downloading source video...'
+    const args = [
+      url,
+      '-o', outputTemplate,
+      '--ffmpeg-location', ffmpegStatic,
+      '--no-playlist',
+      '--newline',
+      '-f', 'bestaudio/best',
+      '--extract-audio',
+      '--audio-format', format,
+      '--socket-timeout', '30',
+      '--retries', '3',
+      '--fragment-retries', '3',
+      '--extractor-retries', '3'
+    ]
+    if (format !== 'wav') args.push('--audio-quality', bitrate.toUpperCase())
+    if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
+    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+
+    const subprocess = spawn(YTDLP_BIN, args, { windowsHide: true })
+
+    let errorOutput = ''
+    const parseProgress = text => {
+      for (const line of text.replace(/\r/g, '\n').split('\n')) {
+        const progressMatch = line.match(/\[download\]\s+([\d.]+)%/)
+        if (progressMatch) {
+          updateAudioJob(jobId, {
+            progress: Math.min(94, Math.max(1, Math.floor(Number(progressMatch[1]) * 0.94))),
+            detail: 'Downloading source video...'
+          })
+        }
+        if (/ExtractAudio|ffmpeg|Post-process/i.test(line)) {
+          updateAudioJob(jobId, { progress: 96, detail: 'Extracting audio track...' })
+        }
+      }
+    }
+
+    subprocess.stdout?.on('data', chunk => parseProgress(chunk.toString()))
+    subprocess.stderr?.on('data', chunk => {
+      const text = chunk.toString()
+      errorOutput = `${errorOutput}${text}`.slice(-8000)
+      parseProgress(text)
+    })
+
+    try {
+      await new Promise((resolve, reject) => {
+        subprocess.on('close', code => {
+          if (code === 0) resolve()
+          else reject(new Error(errorOutput || `yt-dlp exited with code ${code}`))
         })
+        subprocess.on('error', reject)
+      })
+      if (existsSync(outputPath)) {
+        return await finishAudioJob(jobId, outputPath, filename)
       }
-      if (/ExtractAudio|ffmpeg|Post-process/i.test(line)) {
-        updateAudioJob(jobId, { progress: 96, detail: 'Extracting audio track...' })
-      }
+      lastError = new Error('Conversion finished without an audio file. Verify that the URL contains playable audio.')
+    } catch (error) {
+      if (activeJob?.didTimeout()) throw new AudioJobError('Audio conversion timed out. Try a shorter or smaller video.')
+      lastError = new Error(errorOutput || error.message || 'Failed to download the video URL.')
+      const errText = (errorOutput || '').toLowerCase()
+      const isBot = errText.includes('sign in to confirm') || errText.includes('not a bot')
+      if (!isBot) throw lastError
     }
   }
 
-  subprocess.stdout?.on('data', chunk => parseProgress(chunk.toString()))
-  subprocess.stderr?.on('data', chunk => {
-    const text = chunk.toString()
-    errorOutput = `${errorOutput}${text}`.slice(-8000)
-    parseProgress(text)
-  })
-
-  try {
-    await subprocess
-  } catch (error) {
-    if (activeJob.didTimeout()) throw new AudioJobError('Audio conversion timed out. Try a shorter or smaller video.')
-    throw new Error(errorOutput || error.message || 'Failed to download the video URL.')
+  if (lastError) {
+    const msg = lastError.message || String(lastError)
+    if (msg.includes('sign in to confirm') || msg.includes('not a bot')) {
+      throw new AudioJobError('YouTube is blocking this request (bot detection). Try a different video URL or upload the file directly.')
+    }
+    throw lastError
   }
-
-  if (!existsSync(outputPath)) throw new AudioJobError('Conversion finished without an audio file. Verify that the URL contains playable audio.')
-  await finishAudioJob(jobId, outputPath, filename)
 }
 
 router.post('/video/audio/url', async (req, res) => {
@@ -956,9 +991,10 @@ router.post('/video/size', async (req, res) => {
     const { spawn } = await import('child_process')
     const { createRequire } = await import('module')
     const require = createRequire(import.meta.url)
-    const ytdlpBin = path.join(path.dirname(require.resolve('youtube-dl-exec')), '..', 'bin', 'yt-dlp.exe')
+    const ytdlpBin = YTDLP_BIN
 
-    const args = [url, '--no-playlist', '--print', 'filesize_approx']
+    const args = [url, '--no-playlist', '--js-runtimes', 'node', '--extractor-args', 'youtube:player_client=web', '--print', 'filesize_approx']
+    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
     const fmtArgs = getDownloadArgs(url, downloadFormat, '/dev/null')
     const fmtIdx = fmtArgs.indexOf('-f')
     if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
@@ -997,7 +1033,7 @@ router.post('/video/sizes', async (req, res) => {
     const { spawn } = await import('child_process')
     const { createRequire } = await import('module')
     const require = createRequire(import.meta.url)
-    const ytdlpBin = path.join(path.dirname(require.resolve('youtube-dl-exec')), '..', 'bin', 'yt-dlp.exe')
+    const ytdlpBin = YTDLP_BIN
 
     const batchFile = path.join(tmpdir(), `batch_urls_${Date.now()}.txt`)
     await writeFile(batchFile, urls.join('\n'))
@@ -1010,8 +1046,11 @@ router.post('/video/sizes', async (req, res) => {
     const args = [
       '--batch-file', batchFile,
       '--no-playlist',
+      '--js-runtimes', 'node',
+      '--extractor-args', 'youtube:player_client=web',
       '--print', '%(id)s %(filesize_approx)s'
     ]
+    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
     if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
     if (mergeIdx !== -1) args.push('--merge-output-format', fmtArgs[mergeIdx + 1])
     if (audioIdx !== -1) args.push('--extract-audio', '--audio-format', fmtArgs[fmtArgs.indexOf('--audio-format') + 1])
@@ -1063,7 +1102,10 @@ router.post('/video/info', async (req, res) => {
       dumpSingleJson: true,
       flatPlaylist: true,
       ignoreErrors: true,
-      noWarnings: true
+      noWarnings: true,
+      jsRuntimes: 'node',
+      extractorArgs: { youtube: 'player_client=web' },
+      ...(YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES) ? { cookies: YOUTUBE_COOKIES } : {})
     });
 
     res.json(info);
@@ -1094,7 +1136,7 @@ router.post('/video/download', async (req, res) => {
       const filename = `video_${Date.now()}.${ext}`
       const filepath = path.join(tmpdir(), filename)
 
-      const ytdlpBin = path.join(path.dirname(require.resolve('youtube-dl-exec')), '..', 'bin', 'yt-dlp.exe')
+      const ytdlpBin = YTDLP_BIN
       const args = getDownloadArgs(url, downloadFormat, filepath)
 
       await new Promise((resolve, reject) => {
@@ -1380,10 +1422,10 @@ const DENOISE_FILTER = 'highpass=f=200,lowpass=f=3800,afftdn=nf=-25,speechnorm=e
 // ─── Demucs vocal separation (deep neural network source separation) ──────────
 const DEMUCS_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'demucs_separate.py')
 
-function separateWithDemucs(inputPath, outputPath, device = 'cpu') {
+function separateWithDemucs(inputPath, outputPath, onProgress, device = 'cpu') {
   return new Promise((resolve, reject) => {
-    execFile('python3', [DEMUCS_SCRIPT, inputPath, outputPath, device], {
-      timeout: 1800000, // 30 min safety timeout for large files
+    const proc = execFile('python3', [DEMUCS_SCRIPT, inputPath, outputPath, device], {
+      timeout: 1800000,
       maxBuffer: 10 * 1024 * 1024
     }, (err, stdout, stderr) => {
       if (err) {
@@ -1393,6 +1435,17 @@ function separateWithDemucs(inputPath, outputPath, device = 'cpu') {
           : `Demucs separation failed: ${msg}`))
       }
       resolve(stdout.trim())
+    })
+
+    let lineBuf = ''
+    proc.stdout?.on('data', (chunk) => {
+      lineBuf += chunk.toString()
+      const lines = lineBuf.split('\n')
+      lineBuf = lines.pop()
+      for (const line of lines) {
+        const m = line.match(/^PROGRESS:(\d+)/)
+        if (m && onProgress) onProgress(parseInt(m[1], 10))
+      }
     })
   })
 }
@@ -1546,12 +1599,13 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
         if (useDemucs) {
           demucsVocals = path.join(tmpdir(), `demucs_vocals_${Date.now()}.wav`)
           try {
-            setJobStage(jobId, {
-              phase: 'extracting',
-              percent: 0,
-              stage: 'Separating vocals with Demucs (deep learning)...'
+            await separateWithDemucs(inputPath, demucsVocals, (pct) => {
+              setJobStage(jobId, {
+                phase: 'extracting',
+                percent: Math.round(pct * 0.5),
+                stage: `Separating vocals with Demucs... ${pct}%`
+              })
             })
-            await separateWithDemucs(inputPath, demucsVocals)
             audioInput = demucsVocals
           } catch (e) {
             console.error('Demucs separation failed, falling back to ffmpeg denoise:', e.message)

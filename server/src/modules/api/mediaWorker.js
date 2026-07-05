@@ -121,6 +121,7 @@ async function doTranscribe(job) {
     post({ jobId, type: 'progress', phase: 'transcribing', percent: Math.round(((i + 1) / numWindows) * 100), index: i + 1, total: numWindows })
   }
 
+  post({ jobId, type: 'progress', phase: 'transcribing', percent: 100, index: numWindows, total: numWindows })
   post({ jobId, type: 'result', cues, text: cues.map((c) => c.text).join(' ').replace(/\s+/g, ' ').trim() })
 }
 
@@ -149,6 +150,7 @@ async function doTranslate(job) {
     post({ jobId, type: 'progress', phase: 'translating', percent: Math.round(((i + 1) / cues.length) * 100), index: i + 1, total: cues.length })
   }
 
+  post({ jobId, type: 'progress', phase: 'translating', percent: 100, index: cues.length, total: cues.length })
   post({ jobId, type: 'result', cues: out })
 }
 
