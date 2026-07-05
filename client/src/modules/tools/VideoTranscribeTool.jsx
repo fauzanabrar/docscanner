@@ -219,13 +219,13 @@ function VideoTranscribeTool() {
       if (event.lengthComputable) {
         const pct = Math.round((event.loaded / event.total) * 100)
         setUploadProgress(pct)
-        if (pct === 100) { setPhase('processing'); setStage('Extracting audio track...') }
       }
     }
     xhr.onload = () => {
       if (!mountedRef.current) return
       if (xhr.status >= 200 && xhr.status < 300) {
         setPhase('processing')
+        setStage('Extracting audio track...')
       } else {
         try { setError(JSON.parse(xhr.responseText).error || 'Failed to start transcription') }
         catch { setError('Failed to start transcription') }

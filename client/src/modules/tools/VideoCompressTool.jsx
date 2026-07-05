@@ -114,10 +114,6 @@ function VideoCompressTool() {
       if (event.lengthComputable) {
         const percent = Math.round((event.loaded / event.total) * 100)
         setUploadProgress(percent)
-        if (percent === 100) {
-          setPhase('processing')
-          setProcessingStatus('Starting compression...')
-        }
       }
     }
 
@@ -125,6 +121,7 @@ function VideoCompressTool() {
       if (xhr.status >= 200 && xhr.status < 300) {
         // Initial upload finished, job is queued
         setPhase('processing')
+        setProcessingStatus('Starting compression...')
       } else {
         try {
           const data = JSON.parse(xhr.responseText)
