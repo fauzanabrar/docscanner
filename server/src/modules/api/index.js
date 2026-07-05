@@ -3,7 +3,7 @@ import multer from 'multer'
 import { PDFDocument } from 'pdf-lib'
 import { v4 as uuidv4 } from 'uuid'
 import { writeFile, mkdir, unlink, readdir, stat } from 'fs/promises'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import path from 'path'
 import { tmpdir } from 'os'
 import { ZipArchive } from 'archiver'
@@ -16,15 +16,29 @@ ffmpeg.setFfmpegPath(ffmpegStatic)
 
 const router = Router()
 
-const storage = multer.diskStorage({
+const videoStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, tmpdir()),
   filename: (req, file, cb) => cb(null, `input_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9.]/g, '')}`)
 })
-const upload = multer({ storage })
+const memoryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 }
+})
+const videoUpload = multer({
+  storage: videoStorage,
+  limits: { fileSize: 500 * 1024 * 1024 }
+})
 
-// Persistent video jobs store
-const JOBS_FILE = path.join(tmpdir(), 'docscanner_video_jobs.json')
+// Persistent video jobs store. In Docker, UPLOAD_DIR is mounted on the
+// docscanner-data volume, so completed audio jobs survive container restarts.
+const JOBS_ROOT = path.join(process.env.UPLOAD_DIR || path.join(tmpdir(), 'docscanner'), 'video-jobs')
+const AUDIO_RESULTS_DIR = path.join(JOBS_ROOT, 'audio')
+const JOBS_FILE = path.join(JOBS_ROOT, 'jobs.json')
+const LEGACY_JOBS_FILE = path.join(tmpdir(), 'docscanner_video_jobs.json')
+mkdirSync(AUDIO_RESULTS_DIR, { recursive: true })
+
 const videoJobs = new Map()
+const activeVideoJobs = new Map()
 
 function saveJobs() {
   const obj = {}
@@ -34,23 +48,28 @@ function saveJobs() {
 
 function loadJobs() {
   try {
-    if (!existsSync(JOBS_FILE)) return
-    const raw = readFileSync(JOBS_FILE, 'utf-8')
+    const sourceFile = existsSync(JOBS_FILE) ? JOBS_FILE : LEGACY_JOBS_FILE
+    if (!existsSync(sourceFile)) return
+    const raw = readFileSync(sourceFile, 'utf-8')
     const obj = JSON.parse(raw)
+    let jobsChanged = false
     for (const [k, v] of Object.entries(obj)) {
       // Jobs that were mid-download when server stopped are stuck — mark as error
       if (v.status === 'processing') {
         v.status = 'error'
-        v.error = 'Download interrupted (server restarted).'
+        v.error = 'Processing was interrupted because the server restarted.'
+        jobsChanged = true
       }
       // Verify done jobs still have their file
       if (v.status === 'done' && v.resultPath && !existsSync(v.resultPath)) {
         v.status = 'error'
         v.error = 'File no longer available.'
+        jobsChanged = true
       }
       videoJobs.set(k, v)
     }
     console.log(`Loaded ${videoJobs.size} saved video jobs`)
+    if (sourceFile === LEGACY_JOBS_FILE || jobsChanged) saveJobs()
   } catch (e) {
     console.error('Failed to load video jobs:', e.message)
   }
@@ -105,20 +124,36 @@ setInterval(cleanupTempFiles, 60 * 60 * 1000)
 router.get('/video/job/:jobId', (req, res) => {
   const job = videoJobs.get(req.params.jobId)
   if (!job) return res.status(404).json({ error: 'Job not found' })
-  res.json(job)
+  const { resultPath, inputPath, outputPath, ...publicJob } = job
+  res.json(publicJob)
 })
 
 router.get('/video/result/:jobId', (req, res) => {
   const job = videoJobs.get(req.params.jobId)
   if (!job || job.status !== 'done') return res.status(400).json({ error: 'Not ready' })
-  
+  if (!job.resultPath || !existsSync(job.resultPath)) {
+    return res.status(410).json({ error: 'The result file is no longer available.' })
+  }
+
   res.download(job.resultPath, job.filename)
 })
 
 router.delete('/video/job/:jobId', async (req, res) => {
   const job = videoJobs.get(req.params.jobId)
+  const activeJob = activeVideoJobs.get(req.params.jobId)
+  if (activeJob) {
+    activeJob.kill?.()
+    activeVideoJobs.delete(req.params.jobId)
+  }
   if (job) {
-    if (job.resultPath) await unlink(job.resultPath).catch(() => {})
+    const paths = new Set([
+      job.resultPath,
+      job.inputPath,
+      job.outputPath,
+      ...(activeJob?.paths || [])
+    ].filter(Boolean))
+    await Promise.all([...paths].map(filePath => unlink(filePath).catch(() => {})))
+    if (job.type === 'audio-convert') await removeAudioJobFiles(req.params.jobId)
     videoJobs.delete(req.params.jobId)
     saveJobs()
   }
@@ -129,7 +164,7 @@ router.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
-router.post('/pdf/generate', upload.array('images', 20), async (req, res) => {
+router.post('/pdf/generate', memoryUpload.array('images', 20), async (req, res) => {
   try {
     const pdfDoc = await PDFDocument.create()
     
@@ -170,7 +205,7 @@ router.get('/documents', (req, res) => {
 })
 
 // ─── PDF Merge (Combine) ───────────────────────────────────────────────────────
-router.post('/pdf/merge', upload.array('files', 20), async (req, res) => {
+router.post('/pdf/merge', memoryUpload.array('files', 20), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'Please upload at least 1 PDF file to merge.' })
@@ -227,7 +262,7 @@ router.post('/pdf/merge', upload.array('files', 20), async (req, res) => {
 })
 
 // ─── PDF Split ──────────────────────────────────────────────────────────────────
-router.post('/pdf/split', upload.single('file'), async (req, res) => {
+router.post('/pdf/split', memoryUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Please upload a PDF file to split.' })
@@ -281,7 +316,7 @@ router.post('/pdf/split', upload.single('file'), async (req, res) => {
 })
 
 // ─── PDF Compress ───────────────────────────────────────────────────────────────
-router.post('/pdf/compress', upload.single('file'), async (req, res) => {
+router.post('/pdf/compress', memoryUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Please upload a PDF file to compress.' })
@@ -398,6 +433,295 @@ function formatBytes(bytes) {
   while (size >= 1024 && i < units.length - 1) { size /= 1024; i++ }
   return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[i]}`
 }
+
+const AUDIO_FORMATS = {
+  mp3: { extension: 'mp3', codec: 'libmp3lame' },
+  m4a: { extension: 'm4a', codec: 'aac' },
+  wav: { extension: 'wav', codec: 'pcm_s16le' }
+}
+const AUDIO_BITRATES = new Set(['128k', '192k', '320k'])
+const VIDEO_FILE_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v', '.mpeg', '.mpg', '.3gp', '.ts'
+])
+
+function isValidJobId(jobId) {
+  return typeof jobId === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(jobId)
+}
+
+function getAudioSettings(format, bitrate) {
+  const normalizedFormat = String(format || 'mp3').toLowerCase()
+  const normalizedBitrate = AUDIO_BITRATES.has(bitrate) ? bitrate : '192k'
+  return {
+    format: normalizedFormat,
+    bitrate: normalizedBitrate,
+    config: AUDIO_FORMATS[normalizedFormat]
+  }
+}
+
+function isSupportedVideoFile(file) {
+  if (!file) return false
+  return file.mimetype?.startsWith('video/') || VIDEO_FILE_EXTENSIONS.has(path.extname(file.originalname).toLowerCase())
+}
+
+function safeAudioFilename(sourceName, extension) {
+  const sourceBase = path.parse(sourceName || 'converted_audio').name
+  const cleanBase = sourceBase
+    .replace(/[^a-zA-Z0-9 _.-]/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 100) || 'converted_audio'
+  return `${cleanBase}.${extension}`
+}
+
+function secondsFromTimestamp(value) {
+  const parts = String(value || '').trim().split(':').map(Number)
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return null
+  return (parts[0] * 3600) + (parts[1] * 60) + parts[2]
+}
+
+function updateAudioJob(jobId, updates) {
+  const job = videoJobs.get(jobId)
+  if (!job || job.status !== 'processing') return false
+  Object.assign(job, updates, { updatedAt: new Date().toISOString() })
+  videoJobs.set(jobId, job)
+  return true
+}
+
+async function removeAudioJobFiles(jobId) {
+  const prefix = `audio_${jobId}.`
+  const files = await readdir(AUDIO_RESULTS_DIR).catch(() => [])
+  await Promise.all(files
+    .filter(file => file.startsWith(prefix))
+    .map(file => unlink(path.join(AUDIO_RESULTS_DIR, file)).catch(() => {})))
+}
+
+function finishAudioJob(jobId, resultPath, filename) {
+  if (!videoJobs.has(jobId)) {
+    unlink(resultPath).catch(() => {})
+    return
+  }
+  videoJobs.set(jobId, {
+    ...videoJobs.get(jobId),
+    status: 'done',
+    progress: 100,
+    detail: 'Audio is ready to download.',
+    resultPath,
+    filename,
+    completedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  })
+  activeVideoJobs.delete(jobId)
+  saveJobs()
+}
+
+function failAudioJob(jobId, error) {
+  activeVideoJobs.delete(jobId)
+  if (!videoJobs.has(jobId)) return
+  videoJobs.set(jobId, {
+    ...videoJobs.get(jobId),
+    status: 'error',
+    error: error?.message || 'Audio conversion failed.',
+    updatedAt: new Date().toISOString()
+  })
+  saveJobs()
+}
+
+function createAudioJob(jobId, sourceType, sourceLabel, outputPath) {
+  const now = new Date().toISOString()
+  videoJobs.set(jobId, {
+    type: 'audio-convert',
+    sourceType,
+    sourceLabel,
+    status: 'processing',
+    progress: 0,
+    detail: sourceType === 'url' ? 'Preparing video download...' : 'Preparing uploaded video...',
+    outputPath,
+    retainedUntilRemoved: true,
+    createdAt: now,
+    updatedAt: now
+  })
+  saveJobs()
+}
+
+async function runUploadedAudioConversion({ jobId, inputPath, outputPath, filename, config, bitrate }) {
+  const { spawn } = await import('child_process')
+  const args = ['-y', '-i', inputPath, '-vn', '-c:a', config.codec]
+  if (config.extension !== 'wav') args.push('-b:a', bitrate)
+  args.push(outputPath)
+
+  const proc = spawn(ffmpegStatic, args, { windowsHide: true })
+  activeVideoJobs.set(jobId, {
+    kill: () => proc.kill('SIGKILL'),
+    paths: [inputPath, outputPath]
+  })
+
+  let durationSeconds = null
+  let errorOutput = ''
+  proc.stderr.on('data', chunk => {
+    const text = chunk.toString()
+    errorOutput = `${errorOutput}${text}`.slice(-8000)
+
+    const durationMatch = text.match(/Duration:\s*(\d{2}:\d{2}:\d{2}(?:\.\d+)?)/)
+    if (durationMatch) durationSeconds = secondsFromTimestamp(durationMatch[1])
+
+    const timeMatches = [...text.matchAll(/time=(\d{2}:\d{2}:\d{2}(?:\.\d+)?)/g)]
+    const latestTime = timeMatches.at(-1)?.[1]
+    if (latestTime) {
+      const currentSeconds = secondsFromTimestamp(latestTime)
+      const progress = durationSeconds && currentSeconds !== null
+        ? Math.min(99, Math.max(1, Math.floor((currentSeconds / durationSeconds) * 100)))
+        : 25
+      updateAudioJob(jobId, { progress, detail: `Extracting audio (${latestTime})...` })
+    }
+  })
+
+  await new Promise((resolve, reject) => {
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(errorOutput || `FFmpeg exited with code ${code}`)))
+    proc.on('error', reject)
+  })
+
+  await unlink(inputPath).catch(() => {})
+  if (!existsSync(outputPath)) throw new Error('Conversion finished but the audio file was not created.')
+  finishAudioJob(jobId, outputPath, filename)
+}
+
+async function runUrlAudioConversion({ jobId, url, outputTemplate, outputPath, filename, format, bitrate }) {
+  const subprocess = youtubedl.exec(url, {
+    output: outputTemplate,
+    ffmpegLocation: ffmpegStatic,
+    noPlaylist: true,
+    newline: true,
+    format: 'bestaudio/best',
+    extractAudio: true,
+    audioFormat: format,
+    audioQuality: format === 'wav' ? undefined : bitrate.toUpperCase()
+  }, { windowsHide: true })
+
+  activeVideoJobs.set(jobId, {
+    kill: () => subprocess.kill('SIGKILL'),
+    paths: [outputPath]
+  })
+
+  let errorOutput = ''
+  const parseProgress = text => {
+    for (const line of text.replace(/\r/g, '\n').split('\n')) {
+      const progressMatch = line.match(/\[download\]\s+([\d.]+)%/)
+      if (progressMatch) {
+        updateAudioJob(jobId, {
+          progress: Math.min(94, Math.max(1, Math.floor(Number(progressMatch[1]) * 0.94))),
+          detail: 'Downloading source video...'
+        })
+      }
+      if (/ExtractAudio|ffmpeg|Post-process/i.test(line)) {
+        updateAudioJob(jobId, { progress: 96, detail: 'Extracting audio track...' })
+      }
+    }
+  }
+
+  subprocess.stdout?.on('data', chunk => parseProgress(chunk.toString()))
+  subprocess.stderr?.on('data', chunk => {
+    const text = chunk.toString()
+    errorOutput = `${errorOutput}${text}`.slice(-8000)
+    parseProgress(text)
+  })
+
+  try {
+    await subprocess
+  } catch (error) {
+    throw new Error(errorOutput || error.message || 'Failed to download the video URL.')
+  }
+
+  if (!existsSync(outputPath)) throw new Error('Conversion finished but the audio file was not created.')
+  finishAudioJob(jobId, outputPath, filename)
+}
+
+router.post('/video/audio/url', async (req, res) => {
+  const { url, jobId, format = 'mp3', bitrate = '192k' } = req.body
+  if (!isValidJobId(jobId)) return res.status(400).json({ error: 'A valid jobId is required.' })
+  if (videoJobs.has(jobId)) return res.status(409).json({ error: 'This job already exists.' })
+
+  let parsedUrl
+  try {
+    parsedUrl = new URL(url)
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Unsupported protocol')
+  } catch {
+    return res.status(400).json({ error: 'Enter a valid HTTP or HTTPS video URL.' })
+  }
+
+  const settings = getAudioSettings(format, bitrate)
+  if (!settings.config) return res.status(400).json({ error: 'Unsupported audio format.' })
+
+  const outputBase = path.join(AUDIO_RESULTS_DIR, `audio_${jobId}`)
+  const outputPath = `${outputBase}.${settings.config.extension}`
+  const outputTemplate = `${outputBase}.%(ext)s`
+  const filename = safeAudioFilename('converted_audio', settings.config.extension)
+
+  createAudioJob(jobId, 'url', parsedUrl.hostname, outputPath)
+  res.status(202).json({ message: 'Audio conversion started.', jobId })
+
+  runUrlAudioConversion({
+    jobId,
+    url: parsedUrl.toString(),
+    outputTemplate,
+    outputPath,
+    filename,
+    format: settings.format,
+    bitrate: settings.bitrate
+  }).catch(async error => {
+    await removeAudioJobFiles(jobId)
+    failAudioJob(jobId, error)
+  })
+})
+
+router.post('/video/audio/upload', videoUpload.single('file'), async (req, res) => {
+  const inputPath = req.file?.path
+  try {
+    const { jobId, format = 'mp3', bitrate = '192k' } = req.body
+    if (!req.file || !isSupportedVideoFile(req.file)) {
+      if (inputPath) await unlink(inputPath).catch(() => {})
+      return res.status(400).json({ error: 'Upload a supported video file.' })
+    }
+    if (!isValidJobId(jobId)) {
+      await unlink(inputPath).catch(() => {})
+      return res.status(400).json({ error: 'A valid jobId is required.' })
+    }
+    if (videoJobs.has(jobId)) {
+      await unlink(inputPath).catch(() => {})
+      return res.status(409).json({ error: 'This job already exists.' })
+    }
+
+    const settings = getAudioSettings(format, bitrate)
+    if (!settings.config) {
+      await unlink(inputPath).catch(() => {})
+      return res.status(400).json({ error: 'Unsupported audio format.' })
+    }
+
+    const outputPath = path.join(AUDIO_RESULTS_DIR, `audio_${jobId}.${settings.config.extension}`)
+    const filename = safeAudioFilename(req.file.originalname, settings.config.extension)
+    createAudioJob(jobId, 'upload', req.file.originalname, outputPath)
+    const job = videoJobs.get(jobId)
+    job.inputPath = inputPath
+    saveJobs()
+
+    res.status(202).json({ message: 'Audio conversion started.', jobId })
+
+    runUploadedAudioConversion({
+      jobId,
+      inputPath,
+      outputPath,
+      filename,
+      config: settings.config,
+      bitrate: settings.bitrate
+    }).catch(async error => {
+      await unlink(inputPath).catch(() => {})
+      await removeAudioJobFiles(jobId)
+      failAudioJob(jobId, error)
+    })
+  } catch (error) {
+    if (inputPath) await unlink(inputPath).catch(() => {})
+    console.error('Audio upload error:', error)
+    res.status(500).json({ error: 'Failed to start audio conversion.' })
+  }
+})
 
 router.post('/video/size', async (req, res) => {
   const { url, downloadFormat = 'best' } = req.body
@@ -615,7 +939,7 @@ router.post('/video/download', async (req, res) => {
   })()
 })
 
-router.post('/video/compress', upload.single('file'), async (req, res) => {
+router.post('/video/compress', videoUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Please upload a video file to compress.' })
     const { quality = '480p', jobId, duration, speed = 'ultrafast', removeAudio = 'false', outFormat = 'mp4' } = req.body

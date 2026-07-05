@@ -27,6 +27,7 @@ The home page provides a categorized list of available utilities:
 **Video Tools**
 1. **Download Video**: Download videos directly from supported platforms via URL. For playlists, it fetches metadata and allows downloading individual videos or batch queueing with a "Download All" option. Displays real-time download speed, file size, and ETA progress. Estimated file sizes are shown before downloading. Downloads survive page refresh via localStorage and server-side job persistence. Temporary files are automatically cleaned up after 24 hours.
 2. **Compress Video**: Reduce video file size by adjusting resolution and bitrate (requires `fluent-ffmpeg`). Supports uploading large files with no limit and tracking compression frame rate progress.
+3. **Video to Audio**: Upload a video or provide a supported video URL and extract MP3, M4A, or WAV audio. Conversion runs as a persistent server job, reconnects after the tab or window is reopened, and keeps completed audio until the user removes or replaces the source.
 
 ## Implemented Features
 
@@ -44,7 +45,7 @@ The home page provides a categorized list of available utilities:
 - **Tools page** as the new home (`/`) providing a categorized selection of tools:
   - **PDF Tools**: Includes Combine, Split, and Compress (server-side utilities).
   - **Image Tools**: Includes the main DocScanner interface (`/scanner`), Resize Image (Canvas API), and Compress Image (Canvas API with live previews).
-  - **Video Tools**: Includes Download Video (with live CLI progress parsing, selective playlist video queues, and automated browser-level download triggers) and Compress Video (supporting large file storage and conversion with custom speed presets).
+  - **Video Tools**: Includes Download Video (with live CLI progress parsing and selective playlist queues), Compress Video (large-file compression with speed presets), and Video to Audio (upload/URL conversion with persistent background jobs and retained downloads).
 
 
 ## Performance & Optimizations
@@ -126,7 +127,7 @@ The Docker image builds the Vite client, installs the Express server runtime dep
 
 ### Server modules
 
-- `api/`: mounted Express routes for `/api/health`, `/api/pdf/generate`, `/api/pdf/merge`, `/api/pdf/split`, `/api/pdf/compress`, `/api/documents`, `/api/video/info`, `/api/video/download`, `/api/video/size`, `/api/video/sizes`, `/api/video/compress`, and `/api/video/job/:jobId`. Includes automatic temp file cleanup (files older than 24 hours are removed hourly).
+- `api/`: mounted Express routes for `/api/health`, PDF/document operations, video download/compression, and `/api/video/audio/url` plus `/api/video/audio/upload`. Video/audio job status and downloads use `/api/video/job/:jobId` and `/api/video/result/:jobId`. Ordinary temporary video files are cleaned after 24 hours; audio-conversion results are retained in the persistent upload volume until explicitly removed.
 - `auth/`: planned server auth module, not currently implemented as runtime routes.
 - `pdf/`: planned extracted PDF service; current PDF logic lives in `server/src/modules/api/index.js`.
 - `storage/`: planned extracted storage service; current document route only creates a directory and returns metadata.

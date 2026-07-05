@@ -27,39 +27,25 @@ Holds the currently mounted Express API routes for the app.
 - `POST /api/documents`
   Creates a document id, ensures an upload directory exists, and returns document metadata.
 
+- `POST /api/video/audio/url`
+  Starts a background audio extraction job for a supported HTTP(S) video URL.
+
+- `POST /api/video/audio/upload`
+  Accepts an uploaded video and starts background FFmpeg audio extraction.
+
+- `GET /api/video/job/:jobId`, `GET /api/video/result/:jobId`, `DELETE /api/video/job/:jobId`
+  Reconnect to a job, download its completed result, or cancel/remove it. Audio-conversion results live under the persistent upload volume and are retained until deletion; changing the source in the client invokes the delete route.
+
 - `GET /api/documents`
   Returns an empty `documents` array placeholder.
 
 ## Dependencies
 
+- `youtube-dl-exec` and bundled FFmpeg â€” URL retrieval and audio extraction.
+
 - `pdf-lib` — PDF creation, merging, splitting, and structural compression.
 - `archiver` — ZIP packaging for multi-file split output (imported via `createRequire` for ESM compatibility).
 - `multer` — multipart file upload handling with memory storage (50MB limit).
-
-## Current status
-
-- This router is the real server implementation today.
-- There is no mounted `/api/auth/*` router yet.
-- There is no `/api/upload/image` endpoint in the current server.
-# API Module
-
-## Purpose
-
-Holds the currently mounted Express API routes for the app.
-
-## Implemented routes
-
-- `GET /api/health`
-  Returns `{ status, timestamp }` for liveness checks.
-
-- `POST /api/pdf/generate`
-  Accepts up to 20 uploaded images through Multer memory storage, embeds JPEG or PNG images into a `pdf-lib` document, and returns the generated PDF as a download.
-
-- `POST /api/documents`
-  Creates a document id, ensures an upload directory exists, and returns document metadata.
-
-- `GET /api/documents`
-  Returns an empty `documents` array placeholder.
 
 ## Current status
 

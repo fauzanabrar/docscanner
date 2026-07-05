@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provides the PDF Tools UI for combining, splitting, and compressing existing PDF files. All processing happens server-side; the client handles file selection, configuration, and download.
+Provides the PDF, image, and video utility UI. Server-backed tools handle file selection or URL entry, processing configuration, status, and downloads.
 
 ## Components
 
@@ -14,6 +14,9 @@ Provides the PDF Tools UI for combining, splitting, and compressing existing PDF
 
 - `CompressTool.jsx`
   Upload a single PDF, compress via structural optimization, display original vs compressed size and percentage reduction.
+
+- `VideoAudioTool.jsx`
+  Upload a video or submit a supported video URL, select MP3/M4A/WAV output, reconnect to the background job after reopening the browser, and download or explicitly remove the retained result.
 
 ## Implemented behavior
 
@@ -33,8 +36,10 @@ Provides the PDF Tools UI for combining, splitting, and compressing existing PDF
 | Combine | `POST /api/pdf/merge` | Merged PDF |
 | Split | `POST /api/pdf/split` | PDF or ZIP |
 | Compress | `POST /api/pdf/compress` | Compressed PDF + headers |
+| Video to audio (URL) | `POST /api/video/audio/url` | Background job id |
+| Video to audio (upload) | `POST /api/video/audio/upload` | Background job id |
 
 ## Current status
 
-- All three tools are fully functional.
+- PDF combine/split/compress and video-to-audio conversion are fully functional.
 - Compression is structural only (object stream optimization); image recompression is not yet implemented.
