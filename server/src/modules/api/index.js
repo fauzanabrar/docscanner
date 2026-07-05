@@ -13,6 +13,8 @@ import youtubedl from 'youtube-dl-exec'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
 import { Worker } from 'worker_threads'
+import { execFile } from 'child_process'
+import { fileURLToPath } from 'url'
 import { fileURLToPath } from 'url'
 
 // Tell fluent-ffmpeg to use the static binary we just installed
@@ -1375,6 +1377,26 @@ function runTranslationInWorker(jobId, cues, srcLang, tgtLang) {
 // gently normalise the speech level — pulls dialogue out of noisy/musical mixes.
 const DENOISE_FILTER = 'highpass=f=200,lowpass=f=3800,afftdn=nf=-25,speechnorm=e=6.25:r=0.00001'
 
+// ─── Demucs vocal separation (deep neural network source separation) ──────────
+const DEMUCS_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'demucs_separate.py')
+
+function separateWithDemucs(inputPath, outputPath, device = 'cpu') {
+  return new Promise((resolve, reject) => {
+    execFile('python3', [DEMUCS_SCRIPT, inputPath, outputPath, device], {
+      timeout: 1800000, // 30 min safety timeout for large files
+      maxBuffer: 10 * 1024 * 1024
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = stderr || err.message || 'Demucs separation failed'
+        return reject(new Error(msg.includes('Missing dependency')
+          ? 'Demucs is not installed. Install with: pip install demucs torchaudio'
+          : `Demucs separation failed: ${msg}`))
+      }
+      resolve(stdout.trim())
+    })
+  })
+}
+
 // Decode the uploaded media into a 16kHz mono Float32Array using the bundled
 // ffmpeg (raw 32-bit float PCM), which is exactly what Whisper expects.
 // `onProgress(percent)` reports real ffmpeg decode progress when available.
@@ -1487,11 +1509,14 @@ function jobIsLive(jobId) {
 router.post('/video/transcribe', videoUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Please upload a video or audio file to transcribe.' })
-    const { jobId, model = 'tiny', language = 'auto', denoise } = req.body
+    const { jobId, model = 'tiny', language = 'auto', denoise, denoiseMethod } = req.body
     if (!jobId) return res.status(400).json({ error: 'jobId is required' })
 
     const modelId = WHISPER_MODELS[model] || WHISPER_MODELS.tiny
-    const useDenoise = denoise === 'true' || denoise === true
+    // Support both legacy boolean `denoise` and new `denoiseMethod` ('none'|'ffmpeg'|'demucs')
+    const denoiseMode = denoiseMethod || (denoise === 'true' || denoise === true ? 'ffmpeg' : 'none')
+    const useFfmpegDenoise = denoiseMode === 'ffmpeg'
+    const useDemucs = denoiseMode === 'demucs'
     const inputPath = req.file.path
     const originalname = req.file.originalname || 'video.mp4'
     const dotIdx = originalname.lastIndexOf('.')
@@ -1514,21 +1539,48 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
     // disconnects (tab/window closed). State is polled via /video/job/:jobId.
     ;(async () => {
       try {
+        // 0. (optional) Demucs vocal separation — runs on the raw input before
+        //    ffmpeg extraction so it gets the full-quality source audio.
+        let audioInput = inputPath
+        let demucsVocals = null
+        if (useDemucs) {
+          demucsVocals = path.join(tmpdir(), `demucs_vocals_${Date.now()}.wav`)
+          try {
+            setJobStage(jobId, {
+              phase: 'extracting',
+              percent: 0,
+              stage: 'Separating vocals with Demucs (deep learning)...'
+            })
+            await separateWithDemucs(inputPath, demucsVocals)
+            audioInput = demucsVocals
+          } catch (e) {
+            console.error('Demucs separation failed, falling back to ffmpeg denoise:', e.message)
+            // Fall back to ffmpeg denoise if Demucs fails
+            audioInput = inputPath
+          }
+        }
+
         // 1. Extract audio to a Whisper-ready Float32Array (real ffmpeg progress),
         // optionally isolating speech from music/background noise.
         let audio
         try {
-          audio = await extractAudioFloat32(inputPath, (pct) => {
+          audio = await extractAudioFloat32(audioInput, (pct) => {
+            const label = useDemucs
+              ? 'Extracting separated vocals...'
+              : useFfmpegDenoise
+                ? 'Extracting & cleaning audio...'
+                : 'Extracting audio track...'
             setJobStage(jobId, {
               phase: 'extracting',
               percent: pct,
-              stage: useDenoise ? 'Extracting & cleaning audio...' : 'Extracting audio track...'
+              stage: label
             })
-          }, useDenoise)
+          }, useFfmpegDenoise && !useDemucs)
         } catch {
           throw new Error('Could not read audio from this file. It may be corrupt, in an unsupported format, or have no audio track.')
         } finally {
           await unlink(inputPath).catch(() => {})
+          if (demucsVocals) await unlink(demucsVocals).catch(() => {})
         }
         if (!audio || audio.length === 0) {
           throw new Error('No audio track was found in the uploaded file.')

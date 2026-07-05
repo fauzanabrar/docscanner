@@ -39,7 +39,7 @@ function VideoTranscribeTool() {
   const [file, setFile] = useState(null)
   const [model, setModel] = useState('tiny')
   const [language, setLanguage] = useState('auto')
-  const [denoise, setDenoise] = useState(false)
+  const [denoiseMethod, setDenoiseMethod] = useState('none')
   const [error, setError] = useState(null)
 
   const [processing, setProcessing] = useState(false)
@@ -193,7 +193,7 @@ function VideoTranscribeTool() {
     formData.append('file', file)
     formData.append('model', model)
     formData.append('language', language)
-    formData.append('denoise', denoise ? 'true' : 'false')
+    formData.append('denoiseMethod', denoiseMethod)
     formData.append('jobId', newJobId)
 
     const xhr = new XMLHttpRequest()
@@ -434,12 +434,18 @@ function VideoTranscribeTool() {
           </div>
 
           <div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: '500', cursor: processing ? 'default' : 'pointer' }}>
-              <input type="checkbox" checked={denoise} onChange={(e) => setDenoise(e.target.checked)} disabled={processing} style={{ width: '16px', height: '16px' }} />
-              Reduce background music/noise (clearer dialogue)
-            </label>
-            <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.35rem', marginLeft: '1.6rem' }}>
-              Applies a speech-isolation filter — helps on noisy or music-heavy audio (slightly slower extraction).
+            <label htmlFor="denoiseMethod" style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Background Noise Reduction</label>
+            <select id="denoiseMethod" value={denoiseMethod} onChange={(e) => setDenoiseMethod(e.target.value)} disabled={processing} style={selectStyle}>
+              <option value="none">None</option>
+              <option value="ffmpeg">Light — ffmpeg speech filter (fast)</option>
+              <option value="demucs">Deep — Demucs neural separation (slow, best quality)</option>
+            </select>
+            <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.35rem' }}>
+              {denoiseMethod === 'demucs'
+                ? 'Uses Meta\'s Demucs deep learning model to isolate vocals from music/background noise. Significantly slower but much higher quality separation.'
+                : denoiseMethod === 'ffmpeg'
+                  ? 'Applies a speech-isolation EQ filter — helps on mildly noisy audio (slightly slower extraction).'
+                  : 'No noise reduction applied.'}
             </div>
           </div>
 
