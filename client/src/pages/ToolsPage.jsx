@@ -8,6 +8,7 @@ import ImageCompressTool from '../modules/tools/ImageCompressTool'
 import VideoDownloadTool from '../modules/tools/VideoDownloadTool'
 import VideoCompressTool from '../modules/tools/VideoCompressTool'
 import VideoTranscribeTool from '../modules/tools/VideoTranscribeTool'
+import VideoAudioTool from '../modules/tools/VideoAudioTool'
 
 const PDF_TOOLS = [
   {
@@ -66,7 +67,8 @@ const TOOL_COMPONENTS = {
   imagecompress: ImageCompressTool,
   videodownload: VideoDownloadTool,
   videocompress: VideoCompressTool,
-  videotranscribe: VideoTranscribeTool
+  videotranscribe: VideoTranscribeTool,
+  videoaudio: VideoAudioTool
 }
 
 const VIDEO_TOOLS = [
@@ -90,6 +92,13 @@ const VIDEO_TOOLS = [
     description: 'Generate downloadable subtitles (.srt) from a video or audio file using on-device speech recognition.',
     icon: '📝',
     detail: 'Video → .srt subtitles'
+  },
+  {
+    id: 'videoaudio',
+    title: 'Video to Audio',
+    description: 'Extract downloadable audio from an uploaded video or supported video URL.',
+    icon: '♫',
+    detail: 'Video or URL to audio'
   }
 ]
 

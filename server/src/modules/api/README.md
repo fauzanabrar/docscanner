@@ -54,26 +54,39 @@ Holds the currently mounted Express API routes for the app.
 - `POST /api/documents`
   Creates a document id, ensures an upload directory exists, and returns document metadata.
 
+- `POST /api/video/audio/url`
+  Starts a background audio extraction job for a supported public HTTP(S) video URL. Local/private-network destinations are rejected.
+
+- `POST /api/video/audio/upload`
+  Accepts an uploaded video through disk-backed Multer storage and starts background FFmpeg audio extraction.
+
+- `GET /api/video/job/:jobId`, `GET /api/video/result/:jobId`, `DELETE /api/video/job/:jobId`
+  Reconnect to a job, download its completed result, or cancel/remove it. Audio-conversion results live under the persistent upload volume and are retained until deletion; changing the source in the client invokes the delete route.
+
+Audio jobs use atomic serialized registry writes, a configurable source limit (500 MB by default), bounded retries, subprocess timeouts, safe managed-path deletion, and a configurable concurrency limit (`MAX_ACTIVE_AUDIO_JOBS`, default 2). Completed results survive server restarts; processing jobs become errors after a restart because operating-system subprocesses cannot resume.
+
 - `GET /api/documents`
   Returns an empty `documents` array placeholder.
 
 ## Dependencies
 
+- `youtube-dl-exec` and bundled FFmpeg — URL retrieval and audio extraction.
+
 - `pdf-lib` — PDF creation, merging, splitting, and structural compression.
 - `archiver` — ZIP packaging for multi-file split output (imported via `createRequire` for ESM compatibility).
-- `multer` — multipart file upload handling with memory storage (50MB limit) and disk storage for large video uploads.
+- `multer` — multipart handling with memory storage for PDF/image routes and disk storage for video routes. `MAX_UPLOAD_SIZE` defaults to 500 MB.
 - `fluent-ffmpeg` + `ffmpeg-static` — audio extraction (and video compression); bundled ffmpeg binary, no manual install.
 - `@xenova/transformers` — local Whisper speech-to-text and `m2m100` translation (ONNX via `onnxruntime-node`), both run in the shared `mediaWorker.js` worker thread; models download and cache on first use.
-- `youtube-dl-exec` — yt-dlp binary wrapper for the video download/size routes.
 
 ## Background jobs & cleanup
 
-- Video download, compress, and transcribe run as background jobs tracked in an in-memory store and persisted to `docscanner_video_jobs.json` (OS temp dir). Jobs are keyed by a client-supplied `jobId`, so they survive page/tab close and are re-attached by polling `GET /api/video/job/:jobId`.
+- Video download, compress, transcribe/translate, and video-to-audio conversion run as background jobs tracked in memory and persisted to `<UPLOAD_DIR>/video-jobs/jobs.json`. Jobs are keyed by a client-supplied `jobId`, so they survive page/tab closure and are re-attached by polling `GET /api/video/job/:jobId`.
 - On server restart, any job still marked `processing` is flipped to `error` (interrupted), and `done` jobs whose result file is missing are dropped.
-- A cleanup task runs hourly, removing prefixed temp files (`video_`, `compressed_`, `input_`, `batch_urls_`, `transcript_`) older than 24 hours and purging stale jobs.
+- A cleanup task runs hourly, removing ordinary prefixed temp files (`video_`, `compressed_`, `input_`, `batch_urls_`, `transcript_`) older than 24 hours and purging stale jobs. Video-to-audio outputs are retained in persistent storage until explicitly deleted.
 
 ## Current status
 
 - This router is the real server implementation today.
 - There is no mounted `/api/auth/*` router yet.
 - There is no `/api/upload/image` endpoint in the current server.
+- Detailed video-to-audio operations documentation is in [`docs/VIDEO_TO_AUDIO.md`](../../../../docs/VIDEO_TO_AUDIO.md).
