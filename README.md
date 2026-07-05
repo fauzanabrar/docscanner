@@ -31,6 +31,8 @@ The home page provides a categorized list of available utilities:
 
 Video-to-audio jobs reject private-network URLs, cap uploads and URL downloads at 500 MB, time out stalled subprocesses, and limit concurrent conversions (default: 2). Configure `AUDIO_JOB_TIMEOUT_MS` and `MAX_ACTIVE_AUDIO_JOBS` when needed.
 
+See [`docs/VIDEO_TO_AUDIO.md`](docs/VIDEO_TO_AUDIO.md) for lifecycle guarantees, API contracts, storage layout, limits, and recovery behavior.
+
 ## Implemented Features
 
 - Camera capture using the browser MediaDevices API with rear-camera preference on mobile.
@@ -54,7 +56,7 @@ Video-to-audio jobs reject private-network URLs, cap uploads and URL downloads a
 
 - **High-Performance Drag-and-Drop**: The Combine tool leverages native HTML5 DOM drag-and-drop (bypassing heavy React animation libraries) to support reordering massive page grids with zero UI lag.
 - **Asynchronous Thumbnail Generation**: PDFs are parsed client-side using `pdfjs-dist` to generate visual thumbnails asynchronously, preventing browser freezing on large documents.
-- **Large File Support (500MB)**: The server safely accepts payloads up to 500MB across all tools via `multer` memory storage.
+- **Large File Support (500MB)**: The configured Multer limit defaults to 500 MB. PDF/image routes use memory storage; video upload routes use disk-backed temporary storage so large videos are not buffered entirely in Node.js memory.
 - **Memory-Safe Compression**: The compression engine chunks CPU operations (`objectsPerTick: 100`) to prevent Node.js Out-of-Memory (OOM) crashes on 100MB+ PDFs.
 - **Zero-Footprint Split Streaming**: The Split tool uses Node.js Streams to pipe split PDF pages instantly into the `archiver` ZIP stream (`archive.pipe(res)`), resulting in near-zero server memory overhead.
 - **UX Progress Tracking**: The Compress tool utilizes `XMLHttpRequest` to provide real-time, byte-level upload progress tracking alongside simulated multi-phase processing animations for long-running server tasks.
@@ -118,7 +120,7 @@ The Docker image builds the Vite client, installs the Express server runtime dep
 - `perspective/`: four-point warp and crop output.
 - `filters/`: image enhancement and manual filter operations.
 - `export/`: client-side PDF and image export UI.
-- `tools/`: PDF Tools UI — CombineTool, SplitTool, CompressTool (server-side processing).
+- `tools/`: PDF, image, and video utility UIs, including persistent upload/URL video-to-audio conversion.
 - `auth/`: auth context scaffold for future login flows.
 - `pages/`: legacy standalone page manager component; the current document flow is handled in `ScannerPage.jsx`.
 

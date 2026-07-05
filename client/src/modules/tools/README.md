@@ -28,6 +28,10 @@ Provides the PDF, image, and video utility UI. Server-backed tools handle file s
 - Compress tool reads `X-Original-Size`, `X-Compressed-Size`, and `X-Reduction-Percent` response headers to display stats.
 - All tools show loading state during processing and user-facing error messages on failure.
 - Download is triggered via a temporary `<a>` element with `download` attribute and `blob:` URL.
+- Video-to-audio metadata is validated and stored in `localStorage` so the UI can reconnect after refresh or tab closure.
+- An upload must reach 100% before closing the browser; once the server accepts it, conversion continues in the background.
+- Changing the source or selecting **Remove result** calls the delete endpoint. Client state is cleared only after the server confirms deletion, preventing orphaned retained files during network failures.
+- Malformed stored state, duplicate submissions, concurrent deletion attempts, request timeouts, unsupported files, and files above 500 MB are handled explicitly.
 
 ## Server endpoints used
 
@@ -38,8 +42,12 @@ Provides the PDF, image, and video utility UI. Server-backed tools handle file s
 | Compress | `POST /api/pdf/compress` | Compressed PDF + headers |
 | Video to audio (URL) | `POST /api/video/audio/url` | Background job id |
 | Video to audio (upload) | `POST /api/video/audio/upload` | Background job id |
+| Video/audio job status | `GET /api/video/job/:jobId` | Persistent job state |
+| Video/audio result | `GET /api/video/result/:jobId` | Completed audio file |
+| Remove video/audio job | `DELETE /api/video/job/:jobId` | Cancellation/deletion confirmation |
 
 ## Current status
 
 - PDF combine/split/compress and video-to-audio conversion are fully functional.
 - Compression is structural only (object stream optimization); image recompression is not yet implemented.
+- Full video-to-audio lifecycle and API documentation is in [`docs/VIDEO_TO_AUDIO.md`](../../../../docs/VIDEO_TO_AUDIO.md).
