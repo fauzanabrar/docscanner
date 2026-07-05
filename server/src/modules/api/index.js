@@ -1639,10 +1639,100 @@ function jobIsLive(jobId) {
   return !!job && job.status === 'processing'
 }
 
+async function downloadAudioFromUrl(jobId, url, outputPath, onProgress) {
+  const { spawn } = await import('child_process')
+  const playerClients = ['web', 'android_vr', 'ios', 'mweb', 'tv', null]
+  let lastError = null
+
+  for (const client of playerClients) {
+    if (!jobIsLive(jobId)) return // cancelled
+
+    const outputTemplate = outputPath.replace(/\.wav$/, '.%(ext)s')
+    const args = [
+      url,
+      '-o', outputTemplate,
+      '--ffmpeg-location', ffmpegStatic,
+      '--no-playlist',
+      '--newline',
+      '-f', 'bestaudio/best',
+      '--extract-audio',
+      '--audio-format', 'wav',
+      '--socket-timeout', '30',
+      '--retries', '3',
+      '--fragment-retries', '3',
+      '--extractor-retries', '3'
+    ]
+    if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
+    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+
+    const subprocess = spawn(YTDLP_BIN, args, { windowsHide: true })
+
+    // Track active subprocess for cancellation
+    const activeSubprocess = {
+      paths: [outputPath],
+      didTimeout: () => false,
+      clear: () => {},
+      kill: () => subprocess.kill('SIGKILL')
+    }
+    activeVideoJobs.set(jobId, activeSubprocess)
+
+    let errorOutput = ''
+    const parseProgress = text => {
+      for (const line of text.replace(/\r/g, '\n').split('\n')) {
+        const progressMatch = line.match(/\[download\]\s+([\d.]+)%/)
+        if (progressMatch) {
+          const pct = Math.min(99, Math.max(1, Math.floor(Number(progressMatch[1]))))
+          onProgress(pct, `Downloading video source (${pct}%)...`)
+        }
+        if (/ExtractAudio|ffmpeg|Post-process/i.test(line)) {
+          onProgress(99, 'Extracting audio track...')
+        }
+      }
+    }
+
+    subprocess.stdout?.on('data', chunk => parseProgress(chunk.toString()))
+    subprocess.stderr?.on('data', chunk => {
+      const text = chunk.toString()
+      errorOutput = `${errorOutput}${text}`.slice(-8000)
+      parseProgress(text)
+    })
+
+    try {
+      await new Promise((resolve, reject) => {
+        subprocess.on('close', code => {
+          activeVideoJobs.delete(jobId)
+          if (code === 0) resolve()
+          else reject(new Error(errorOutput || `yt-dlp exited with code ${code}`))
+        })
+        subprocess.on('error', err => {
+          activeVideoJobs.delete(jobId)
+          reject(err)
+        })
+      })
+      if (existsSync(outputPath)) {
+        return
+      }
+      lastError = new Error('Download finished but output audio file was not found.')
+    } catch (error) {
+      lastError = error
+      const errText = (errorOutput || '').toLowerCase()
+      const isBot = errText.includes('sign in to confirm') || errText.includes('not a bot')
+      if (!isBot) break
+    }
+  }
+
+  if (lastError) {
+    const msg = lastError.message || String(lastError)
+    if (msg.includes('sign in to confirm') || msg.includes('not a bot')) {
+      throw new Error('YouTube is blocking this request (bot detection). Try a different video URL or upload the file directly.')
+    }
+    throw lastError
+  }
+}
+
 router.post('/video/transcribe', videoUpload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'Please upload a video or audio file to transcribe.' })
-    const { jobId, model = 'tiny', language = 'auto', denoise, denoiseMethod } = req.body
+    const { jobId, url, model = 'tiny', language = 'auto', denoise, denoiseMethod } = req.body
     if (!jobId) return res.status(400).json({ error: 'jobId is required' })
 
     const modelId = WHISPER_MODELS[model] || WHISPER_MODELS.tiny
@@ -1650,10 +1740,30 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
     const denoiseMode = denoiseMethod || (denoise === 'true' || denoise === true ? 'ffmpeg' : 'none')
     const useFfmpegDenoise = denoiseMode === 'ffmpeg'
     const useDemucs = denoiseMode === 'demucs'
-    const inputPath = req.file.path
-    const originalname = req.file.originalname || 'video.mp4'
-    const dotIdx = originalname.lastIndexOf('.')
-    const baseName = dotIdx > 0 ? originalname.substring(0, dotIdx) : originalname
+
+    let finalUrl = ''
+    let baseName = 'video'
+    let tempAudioPath = ''
+    let inputPath = ''
+    
+    if (url) {
+      let parsedUrl
+      try {
+        parsedUrl = await validateRemoteVideoUrl(url)
+        finalUrl = parsedUrl.toString()
+        const host = parsedUrl.hostname.replace(/^www\./i, '')
+        baseName = `url_${host}_${Date.now()}`
+      } catch (error) {
+        return res.status(400).json({ error: error.publicMessage || 'Enter a valid public video URL.' })
+      }
+    } else {
+      if (!req.file) return res.status(400).json({ error: 'Please upload a video or audio file, or provide a URL to transcribe.' })
+      inputPath = req.file.path
+      const originalname = req.file.originalname || 'video.mp4'
+      const dotIdx = originalname.lastIndexOf('.')
+      baseName = dotIdx > 0 ? originalname.substring(0, dotIdx) : originalname
+    }
+
     const srtFilename = `${baseName}.srt`
     const outputPath = path.join(tmpdir(), `transcript_${Date.now()}.srt`)
 
@@ -1662,8 +1772,10 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
       status: 'processing',
       phase: 'extracting',
       percent: 0,
-      stage: 'Extracting audio track...',
-      baseName
+      stage: url ? 'Downloading video source...' : 'Extracting audio track...',
+      baseName,
+      sourceType: url ? 'url' : 'upload',
+      sourceLabel: url ? finalUrl : (req.file ? req.file.originalname : 'upload')
     })
     saveJobs()
     res.json({ message: 'Transcription started', jobId })
@@ -1672,14 +1784,38 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
     // disconnects (tab/window closed). State is polled via /video/job/:jobId.
     ;(async () => {
       try {
+        let audioInput
+        let demucsVocals = null
+
+        if (url) {
+          tempAudioPath = path.join(tmpdir(), `transcribe_tmp_${jobId}.wav`)
+          // Update the job object with the input path so it gets cleaned up if deleted
+          const job = videoJobs.get(jobId) || {}
+          videoJobs.set(jobId, { ...job, inputPath: tempAudioPath })
+          saveJobs()
+
+          // Download using yt-dlp to tempAudioPath
+          await downloadAudioFromUrl(jobId, finalUrl, tempAudioPath, (percent, stage) => {
+            setJobStage(jobId, {
+              phase: 'extracting',
+              percent: Math.round(percent * 0.9), // Keep room for extraction/demucs
+              stage
+            })
+          })
+          
+          audioInput = tempAudioPath
+        } else {
+          audioInput = inputPath
+        }
+
+        if (!jobIsLive(jobId)) return // cancelled during download
+
         // 0. (optional) Demucs vocal separation — runs on the raw input before
         //    ffmpeg extraction so it gets the full-quality source audio.
-        let audioInput = inputPath
-        let demucsVocals = null
         if (useDemucs) {
-          demucsVocals = path.join(tmpdir(), `demucs_vocals_${Date.now()}.wav`)
+          demucsVocals = path.join(tmpdir(), `demucs_vocals_${jobId}.wav`)
           try {
-            await separateWithDemucs(inputPath, demucsVocals, (pct) => {
+            await separateWithDemucs(audioInput, demucsVocals, (pct) => {
               setJobStage(jobId, {
                 phase: 'extracting',
                 percent: Math.round(pct * 0.5),
@@ -1690,7 +1826,7 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
           } catch (e) {
             console.error('Demucs separation failed, falling back to ffmpeg denoise:', e.message)
             // Fall back to ffmpeg denoise if Demucs fails
-            audioInput = inputPath
+            audioInput = url ? tempAudioPath : inputPath
           }
         }
 
@@ -1710,14 +1846,15 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
               stage: label
             })
           }, useFfmpegDenoise && !useDemucs)
-        } catch {
+        } catch (e) {
           throw new Error('Could not read audio from this file. It may be corrupt, in an unsupported format, or have no audio track.')
         } finally {
-          await unlink(inputPath).catch(() => {})
+          if (inputPath) await unlink(inputPath).catch(() => {})
+          if (tempAudioPath) await unlink(tempAudioPath).catch(() => {})
           if (demucsVocals) await unlink(demucsVocals).catch(() => {})
         }
         if (!audio || audio.length === 0) {
-          throw new Error('No audio track was found in the uploaded file.')
+          throw new Error('No audio track was found in the source.')
         }
         if (!jobIsLive(jobId)) return // cancelled during extraction
         setJobStage(jobId, { durationSeconds: Math.round(audio.length / 16000) })
@@ -1768,7 +1905,8 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
         saveJobs()
       } catch (err) {
         console.error('Transcription error:', err)
-        await unlink(inputPath).catch(() => {})
+        if (inputPath) await unlink(inputPath).catch(() => {})
+        if (tempAudioPath) await unlink(tempAudioPath).catch(() => {})
         // Only report the error if the job still exists (don't resurrect one the
         // client explicitly cancelled).
         if (videoJobs.has(jobId)) {

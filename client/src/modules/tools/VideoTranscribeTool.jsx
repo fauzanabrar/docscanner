@@ -37,6 +37,8 @@ function fmtDur(s) {
 
 function VideoTranscribeTool() {
   const [file, setFile] = useState(null)
+  const [sourceType, setSourceType] = useState('upload') // 'upload' | 'url'
+  const [url, setUrl] = useState('')
   const [model, setModel] = useState('tiny')
   const [language, setLanguage] = useState('auto')
   const [denoiseMethod, setDenoiseMethod] = useState('none')
@@ -190,22 +192,31 @@ function VideoTranscribeTool() {
 
   const handleTranscribe = (e) => {
     e.preventDefault()
-    if (!file) return
-    if (file.type && !file.type.startsWith('video/') && !file.type.startsWith('audio/')) {
-      setError('Please select a valid video or audio file.')
-      return
+    if (sourceType === 'upload') {
+      if (!file) return
+      if (file.type && !file.type.startsWith('video/') && !file.type.startsWith('audio/')) {
+        setError('Please select a valid video or audio file.')
+        return
+      }
+    } else {
+      if (!url.trim()) return
     }
 
     const newJobId = Date.now().toString()
     setJobId(newJobId)
     localStorage.setItem('transcribeJobId', newJobId)
-    setProcessing(true); setPhase('uploading')
+    setProcessing(true)
+    setPhase(sourceType === 'upload' ? 'uploading' : 'processing')
     setUploadProgress(0); setPercent(0); setEta(null); setDuration(null)
     setSrtText(''); setError(null)
     if (language && language !== 'auto') setSourceLang(language)
 
     const formData = new FormData()
-    formData.append('file', file)
+    if (sourceType === 'upload') {
+      formData.append('file', file)
+    } else {
+      formData.append('url', url.trim())
+    }
     formData.append('model', model)
     formData.append('language', language)
     formData.append('denoiseMethod', denoiseMethod)
@@ -214,18 +225,22 @@ function VideoTranscribeTool() {
     const xhr = new XMLHttpRequest()
     xhrRef.current = xhr
     xhr.open('POST', '/api/video/transcribe')
-    xhr.upload.onprogress = (event) => {
-      if (!mountedRef.current) return
-      if (event.lengthComputable) {
-        const pct = Math.round((event.loaded / event.total) * 100)
-        setUploadProgress(pct)
+    
+    if (sourceType === 'upload') {
+      xhr.upload.onprogress = (event) => {
+        if (!mountedRef.current) return
+        if (event.lengthComputable) {
+          const pct = Math.round((event.loaded / event.total) * 100)
+          setUploadProgress(pct)
+        }
       }
     }
+
     xhr.onload = () => {
       if (!mountedRef.current) return
       if (xhr.status >= 200 && xhr.status < 300) {
         setPhase('processing')
-        setStage('Extracting audio track...')
+        setStage(sourceType === 'upload' ? 'Extracting audio track...' : 'Downloading video source...')
       } else {
         try { setError(JSON.parse(xhr.responseText).error || 'Failed to start transcription') }
         catch { setError('Failed to start transcription') }
@@ -235,13 +250,13 @@ function VideoTranscribeTool() {
     }
     xhr.onerror = () => {
       if (!mountedRef.current) return
-      setError('A network error occurred during upload.')
+      setError(sourceType === 'upload' ? 'A network error occurred during upload.' : 'A network error occurred.')
       setProcessing(false); setPhase('')
     }
     try {
       xhr.send(formData)
     } catch {
-      setError('Failed to start the upload.')
+      setError('Failed to start the transcription.')
       setProcessing(false); setPhase(''); setJobId(null)
       localStorage.removeItem('transcribeJobId')
     }
@@ -253,7 +268,7 @@ function VideoTranscribeTool() {
     if (translateJobId) await fetch(`/api/video/job/${translateJobId}`, { method: 'DELETE' }).catch(() => {})
     setJobId(null); localStorage.removeItem('transcribeJobId')
     setTranslateJobId(null); localStorage.removeItem('translateJobId')
-    setProcessing(false); setPhase(''); setFile(null)
+    setProcessing(false); setPhase(''); setFile(null); setUrl('')
     setSrtText(''); setPercent(0); setUploadProgress(0); setError(null)
     setTranslating(false); setTranslatedSrt(''); setTranslateError(null); setTranslatePercent(0)
     setActiveTab('transcription')
@@ -427,12 +442,62 @@ function VideoTranscribeTool() {
         </div>
       ) : (
         <form onSubmit={handleTranscribe} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div>
-            <label htmlFor="transcribeFile" style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Select Video or Audio</label>
-            <input id="transcribeFile" type="file" accept="video/*,audio/*"
-              onChange={(e) => setFile(e.target.files[0])} required disabled={processing}
-              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }} />
+          <div style={{ display: 'flex', borderBottom: '2px solid #e0e0e0', marginBottom: '0.5rem', gap: '1rem' }}>
+            <button
+              type="button"
+              onClick={() => setSourceType('upload')}
+              disabled={processing}
+              style={{
+                padding: '0.75rem 1.5rem',
+                backgroundColor: 'transparent',
+                border: 'none',
+                borderBottom: sourceType === 'upload' ? '3px solid #1976d2' : '3px solid transparent',
+                color: sourceType === 'upload' ? '#1976d2' : '#666',
+                fontWeight: '600',
+                cursor: processing ? 'not-allowed' : 'pointer',
+                fontSize: '1rem',
+                outline: 'none',
+                marginBottom: '-2px'
+              }}
+            >
+              Upload File
+            </button>
+            <button
+              type="button"
+              onClick={() => setSourceType('url')}
+              disabled={processing}
+              style={{
+                padding: '0.75rem 1.5rem',
+                backgroundColor: 'transparent',
+                border: 'none',
+                borderBottom: sourceType === 'url' ? '3px solid #1976d2' : '3px solid transparent',
+                color: sourceType === 'url' ? '#1976d2' : '#666',
+                fontWeight: '600',
+                cursor: processing ? 'not-allowed' : 'pointer',
+                fontSize: '1rem',
+                outline: 'none',
+                marginBottom: '-2px'
+              }}
+            >
+              Video URL
+            </button>
           </div>
+
+          {sourceType === 'upload' ? (
+            <div>
+              <label htmlFor="transcribeFile" style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Select Video or Audio</label>
+              <input id="transcribeFile" type="file" accept="video/*,audio/*"
+                onChange={(e) => setFile(e.target.files[0])} required disabled={processing}
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc' }} />
+            </div>
+          ) : (
+            <div>
+              <label htmlFor="transcribeUrl" style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Video URL</label>
+              <input id="transcribeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..."
+                value={url} onChange={(e) => setUrl(e.target.value)} required disabled={processing}
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }} />
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
             <div>
@@ -491,7 +556,7 @@ function VideoTranscribeTool() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '0.9rem' }}>
                 <strong>{stage}</strong>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <span>{barPercent}%</span>
+                  <span>{barPercent}%</span>
                   <button type="button" onClick={handleClearJob}
                     style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', backgroundColor: '#fff', color: '#d32f2f', border: '1px solid #d32f2f', borderRadius: '4px', cursor: 'pointer', fontWeight: '600' }}>
                     Cancel
@@ -509,8 +574,18 @@ function VideoTranscribeTool() {
             </div>
           )}
 
-          <button type="submit" disabled={processing || !file}
-            style={{ padding: '0.75rem', backgroundColor: processing || !file ? '#9e9e9e' : '#1976d2', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '1rem', fontWeight: '600', cursor: processing || !file ? 'not-allowed' : 'pointer' }}>
+          <button type="submit" disabled={processing || (sourceType === 'upload' ? !file : !url.trim())}
+            style={{
+              padding: '0.75rem',
+              backgroundColor: processing || (sourceType === 'upload' ? !file : !url.trim()) ? '#9e9e9e' : '#1976d2',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              fontSize: '1rem',
+              fontWeight: '600',
+              cursor: processing || (sourceType === 'upload' ? !file : !url.trim()) ? 'not-allowed' : 'pointer'
+            }}
+          >
             {processing ? 'Processing...' : 'Transcribe Video'}
           </button>
         </form>
