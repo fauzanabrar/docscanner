@@ -202,7 +202,7 @@ function ToolsPage() {
       )}
 
       {ActiveComponent && (
-        <div className="tool-active-panel">
+        <div className="tool-active-panel" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: 'calc(100vh - 120px)', paddingBottom: '4rem' }}>
           <ActiveComponent />
         </div>
       )}

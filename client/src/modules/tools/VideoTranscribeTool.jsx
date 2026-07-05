@@ -67,6 +67,9 @@ function VideoTranscribeTool() {
   const [translateError, setTranslateError] = useState(null)
   const [translateCopied, setTranslateCopied] = useState(false)
 
+  // ── Active tab after completion ────────────────────────────────────
+  const [activeTab, setActiveTab] = useState('transcription') // 'transcription' | 'translation'
+
   // Track mount state so async XHR/poll callbacks never call setState after the
   // component has unmounted (e.g. the user navigated back to "All tools" while a
   // job is still running). The server keeps working regardless.
@@ -236,6 +239,7 @@ function VideoTranscribeTool() {
     setProcessing(false); setPhase(''); setFile(null)
     setSrtText(''); setPercent(0); setUploadProgress(0); setError(null)
     setTranslating(false); setTranslatedSrt(''); setTranslateError(null); setTranslatePercent(0)
+    setActiveTab('transcription')
   }
 
   const handleTranslate = () => {
@@ -298,90 +302,111 @@ function VideoTranscribeTool() {
 
       {phase === 'done' ? (
         <div>
-          <div style={{ padding: '1.5rem', backgroundColor: '#e8f5e9', borderRadius: '8px', border: '1px solid #c8e6c9', marginBottom: '1.5rem' }}>
-            <h3 style={{ color: '#2e7d32', marginBottom: '0.5rem' }}>Transcription Complete!</h3>
-            <p style={{ color: '#1b5e20', margin: 0 }}>Your subtitles are ready. Review, copy, download, or translate them below.</p>
+          <div style={{ padding: '1rem 1.25rem', backgroundColor: '#e8f5e9', borderRadius: '8px', border: '1px solid #c8e6c9', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <span style={{ fontSize: '1.3rem' }}>&#10003;</span>
+            <div>
+              <strong style={{ color: '#2e7d32' }}>Transcription complete</strong>
+              <span style={{ color: '#388e3c', marginLeft: '0.5rem', fontSize: '0.9rem' }}>Subtitles ready — review, download, or translate below.</span>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-            <strong style={{ color: '#333' }}>Subtitles (.srt)</strong>
-            <button type="button" onClick={() => copyText(srtText, setCopied)}
-              style={{ padding: '0.35rem 0.9rem', backgroundColor: 'white', color: '#1976d2', border: '1px solid #1976d2', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>
-              {copied ? 'Copied!' : 'Copy'}
+          {/* ── Tabs ──────────────────────────────────────────────────── */}
+          <div style={{ display: 'flex', borderBottom: '2px solid #e0e0e0', marginBottom: '1.25rem' }}>
+            <button type="button" onClick={() => setActiveTab('transcription')}
+              style={{ flex: 1, padding: '0.7rem 1rem', background: 'none', border: 'none', borderBottom: activeTab === 'transcription' ? '2px solid #1976d2' : '2px solid transparent', marginBottom: '-2px', fontWeight: '600', fontSize: '0.95rem', cursor: 'pointer', color: activeTab === 'transcription' ? '#1976d2' : '#666', transition: 'color 0.15s, border-color 0.15s' }}>
+              Transcription
+            </button>
+            <button type="button" onClick={() => setActiveTab('translation')}
+              style={{ flex: 1, padding: '0.7rem 1rem', background: 'none', border: 'none', borderBottom: activeTab === 'translation' ? '2px solid #1976d2' : '2px solid transparent', marginBottom: '-2px', fontWeight: '600', fontSize: '0.95rem', cursor: 'pointer', color: activeTab === 'translation' ? '#1976d2' : '#666', transition: 'color 0.15s, border-color 0.15s' }}>
+              Translate
+              {translatedSrt && <span style={{ marginLeft: '0.4rem', display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#4caf50', verticalAlign: 'middle' }} />}
             </button>
           </div>
-          <textarea readOnly value={srtText}
-            style={{ width: '100%', height: '260px', padding: '1rem', borderRadius: '8px', border: '1px solid #ccc', fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: '1.5', resize: 'vertical', backgroundColor: '#fafafa', boxSizing: 'border-box' }} />
 
-          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
-            <a href={`/api/video/result/${jobId}`} style={btn('#1976d2')}>Download .srt</a>
-            <button onClick={handleClearJob} style={{ ...btn('white'), color: '#d32f2f', border: '1px solid #d32f2f' }}>Transcribe Another</button>
-          </div>
-
-          {/* ── Translate panel ─────────────────────────────────────── */}
-          <div style={{ marginTop: '2.5rem', paddingTop: '1.5rem', borderTop: '1px solid #e0e0e0' }}>
-            <h3 style={{ color: '#1976d2', marginBottom: '0.75rem' }}>Translate subtitles</h3>
-
-            {translatedSrt ? (
-              <div>
-                <div style={{ padding: '1rem 1.25rem', backgroundColor: '#e3f2fd', borderRadius: '8px', border: '1px solid #bbdefb', marginBottom: '1rem' }}>
-                  <strong style={{ color: '#0d47a1' }}>Translated to {langLabel(translatedLang)}</strong>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                  <strong style={{ color: '#333' }}>{langLabel(translatedLang)} subtitles (.srt)</strong>
-                  <button type="button" onClick={() => copyText(translatedSrt, setTranslateCopied)}
-                    style={{ padding: '0.35rem 0.9rem', backgroundColor: 'white', color: '#1976d2', border: '1px solid #1976d2', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>
-                    {translateCopied ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
-                <textarea readOnly value={translatedSrt}
-                  style={{ width: '100%', height: '220px', padding: '1rem', borderRadius: '8px', border: '1px solid #ccc', fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: '1.5', resize: 'vertical', backgroundColor: '#fafafa', boxSizing: 'border-box' }} />
-                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.25rem' }}>
-                  <a href={`/api/video/result/${translateJobId}`} style={btn('#1976d2')}>Download .srt</a>
-                  <button onClick={handleTranslateAnother} style={{ ...btn('white'), color: '#1976d2', border: '1px solid #1976d2' }}>Translate another language</button>
-                </div>
-              </div>
-            ) : translating ? (
-              <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
-                  <strong>{translateStage || 'Translating...'}</strong>
-                  <span>{Math.min(translatePercent, 99)}%</span>
-                </div>
-                <div style={{ width: '100%', height: '8px', background: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(translatePercent, 99)}%`, height: '100%', background: '#1976d2', transition: 'width 0.5s ease' }} />
-                </div>
-                {translateEta != null && (
-                  <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#666' }}>Estimated time left: ~{fmtDur(translateEta)}</div>
-                )}
-              </div>
-            ) : (
-              <div>
-                <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1rem' }}>
-                  Generate an <code>.srt</code> in another language. Set the spoken (source) language for best results.
-                </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>From (source)</label>
-                    <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} style={selectStyle}>
-                      {TRANSLATE_LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>To (target)</label>
-                    <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} style={selectStyle}>
-                      {TRANSLATE_LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-                    </select>
-                  </div>
-                </div>
-                {translateError && <div style={{ color: '#d32f2f', padding: '0.75rem', backgroundColor: '#ffebee', borderRadius: '4px', marginBottom: '1rem' }}>{translateError}</div>}
-                <button onClick={handleTranslate} disabled={sourceLang === targetLang}
-                  style={{ ...btn(sourceLang === targetLang ? '#9e9e9e' : '#1976d2'), cursor: sourceLang === targetLang ? 'not-allowed' : 'pointer' }}>
-                  Translate to {langLabel(targetLang)}
+          {/* ── Transcription tab ─────────────────────────────────────── */}
+          {activeTab === 'transcription' && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ color: '#333' }}>Subtitles (.srt)</strong>
+                <button type="button" onClick={() => copyText(srtText, setCopied)}
+                  style={{ padding: '0.35rem 0.9rem', backgroundColor: 'white', color: '#1976d2', border: '1px solid #1976d2', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>
+                  {copied ? 'Copied!' : 'Copy'}
                 </button>
-                {sourceLang === targetLang && <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.5rem' }}>Choose a different target language.</div>}
               </div>
-            )}
-          </div>
+              <textarea readOnly value={srtText}
+                style={{ width: '100%', height: '260px', padding: '1rem', borderRadius: '8px', border: '1px solid #ccc', fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: '1.5', resize: 'vertical', backgroundColor: '#fafafa', boxSizing: 'border-box' }} />
+
+              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.25rem' }}>
+                <a href={`/api/video/result/${jobId}`} style={btn('#1976d2')}>Download .srt</a>
+                <button onClick={handleClearJob} style={{ ...btn('white'), color: '#d32f2f', border: '1px solid #d32f2f' }}>Transcribe Another</button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Translation tab ───────────────────────────────────────── */}
+          {activeTab === 'translation' && (
+            <div>
+              {translatedSrt ? (
+                <div>
+                  <div style={{ padding: '0.75rem 1rem', backgroundColor: '#e3f2fd', borderRadius: '8px', border: '1px solid #bbdefb', marginBottom: '1rem' }}>
+                    <strong style={{ color: '#0d47a1' }}>Translated to {langLabel(translatedLang)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <strong style={{ color: '#333' }}>{langLabel(translatedLang)} subtitles (.srt)</strong>
+                    <button type="button" onClick={() => copyText(translatedSrt, setTranslateCopied)}
+                      style={{ padding: '0.35rem 0.9rem', backgroundColor: 'white', color: '#1976d2', border: '1px solid #1976d2', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '600' }}>
+                      {translateCopied ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <textarea readOnly value={translatedSrt}
+                    style={{ width: '100%', height: '220px', padding: '1rem', borderRadius: '8px', border: '1px solid #ccc', fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: '1.5', resize: 'vertical', backgroundColor: '#fafafa', boxSizing: 'border-box' }} />
+                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.25rem' }}>
+                    <a href={`/api/video/result/${translateJobId}`} style={btn('#1976d2')}>Download .srt</a>
+                    <button onClick={handleTranslateAnother} style={{ ...btn('white'), color: '#1976d2', border: '1px solid #1976d2' }}>Translate another language</button>
+                  </div>
+                </div>
+              ) : translating ? (
+                <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
+                    <strong>{translateStage || 'Translating...'}</strong>
+                    <span>{Math.min(translatePercent, 99)}%</span>
+                  </div>
+                  <div style={{ width: '100%', height: '8px', background: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(translatePercent, 99)}%`, height: '100%', background: '#1976d2', transition: 'width 0.5s ease' }} />
+                  </div>
+                  {translateEta != null && (
+                    <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#666' }}>Estimated time left: ~{fmtDur(translateEta)}</div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1rem' }}>
+                    Generate an <code>.srt</code> in another language. Set the spoken (source) language for best results.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>From (source)</label>
+                      <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} style={selectStyle}>
+                        {TRANSLATE_LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>To (target)</label>
+                      <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} style={selectStyle}>
+                        {TRANSLATE_LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {translateError && <div style={{ color: '#d32f2f', padding: '0.75rem', backgroundColor: '#ffebee', borderRadius: '4px', marginBottom: '1rem' }}>{translateError}</div>}
+                  <button onClick={handleTranslate} disabled={sourceLang === targetLang}
+                    style={{ ...btn(sourceLang === targetLang ? '#9e9e9e' : '#1976d2'), cursor: sourceLang === targetLang ? 'not-allowed' : 'pointer' }}>
+                    Translate to {langLabel(targetLang)}
+                  </button>
+                  {sourceLang === targetLang && <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.5rem' }}>Choose a different target language.</div>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <form onSubmit={handleTranscribe} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
