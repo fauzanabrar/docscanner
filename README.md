@@ -26,8 +26,10 @@ The home page provides a categorized list of available utilities:
 
 **Video Tools**
 1. **Download Video**: Download videos directly from supported platforms via URL. For playlists, it fetches metadata and allows downloading individual videos or batch queueing with a "Download All" option. Displays real-time download speed, file size, and ETA progress. Estimated file sizes are shown before downloading. Downloads survive page refresh via localStorage and server-side job persistence. Temporary files are automatically cleaned up after 24 hours.
-2. **Compress Video**: Reduce video file size by adjusting resolution and bitrate (requires `fluent-ffmpeg`). Supports uploading large files with no limit and tracking compression frame rate progress.
+2. **Compress Video**: Reduce video file size by adjusting resolution and bitrate (requires `fluent-ffmpeg`). Supports uploads up to the configured limit (500 MB by default) and tracks compression frame-rate progress.
 3. **Video to Audio**: Upload a video or provide a supported video URL and extract MP3, M4A, or WAV audio. Conversion runs as a persistent server job, reconnects after the tab or window is reopened, and keeps completed audio until the user removes or replaces the source.
+
+Video-to-audio jobs reject private-network URLs, cap uploads and URL downloads at 500 MB, time out stalled subprocesses, and limit concurrent conversions (default: 2). Configure `AUDIO_JOB_TIMEOUT_MS` and `MAX_ACTIVE_AUDIO_JOBS` when needed.
 
 ## Implemented Features
 

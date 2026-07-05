@@ -28,13 +28,15 @@ Holds the currently mounted Express API routes for the app.
   Creates a document id, ensures an upload directory exists, and returns document metadata.
 
 - `POST /api/video/audio/url`
-  Starts a background audio extraction job for a supported HTTP(S) video URL.
+  Starts a background audio extraction job for a supported public HTTP(S) video URL. Local/private-network destinations are rejected.
 
 - `POST /api/video/audio/upload`
   Accepts an uploaded video and starts background FFmpeg audio extraction.
 
 - `GET /api/video/job/:jobId`, `GET /api/video/result/:jobId`, `DELETE /api/video/job/:jobId`
   Reconnect to a job, download its completed result, or cancel/remove it. Audio-conversion results live under the persistent upload volume and are retained until deletion; changing the source in the client invokes the delete route.
+
+Audio jobs use atomic registry writes, a 500 MB source limit, bounded retries, subprocess timeouts, and a configurable concurrency limit (`MAX_ACTIVE_AUDIO_JOBS`, default 2).
 
 - `GET /api/documents`
   Returns an empty `documents` array placeholder.
