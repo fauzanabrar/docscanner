@@ -7,6 +7,7 @@ import ImageResizeTool from '../modules/tools/ImageResizeTool'
 import ImageCompressTool from '../modules/tools/ImageCompressTool'
 import VideoDownloadTool from '../modules/tools/VideoDownloadTool'
 import VideoCompressTool from '../modules/tools/VideoCompressTool'
+import VideoAudioTool from '../modules/tools/VideoAudioTool'
 
 const PDF_TOOLS = [
   {
@@ -64,7 +65,8 @@ const TOOL_COMPONENTS = {
   imageresize: ImageResizeTool,
   imagecompress: ImageCompressTool,
   videodownload: VideoDownloadTool,
-  videocompress: VideoCompressTool
+  videocompress: VideoCompressTool,
+  videoaudio: VideoAudioTool
 }
 
 const VIDEO_TOOLS = [
@@ -81,6 +83,13 @@ const VIDEO_TOOLS = [
     description: 'Reduce video file size by adjusting resolution and bitrate.',
     icon: '🗜️',
     detail: 'Smaller video size'
+  },
+  {
+    id: 'videoaudio',
+    title: 'Video to Audio',
+    description: 'Extract downloadable audio from an uploaded video or supported video URL.',
+    icon: '♫',
+    detail: 'Video or URL to audio'
   }
 ]
 

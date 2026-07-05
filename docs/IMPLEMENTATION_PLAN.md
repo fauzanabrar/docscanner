@@ -1,6 +1,6 @@
 # Document Scanner Web App — Implementation Plan
 
-> Note: This file is the original implementation plan. The live code has changed since this plan was written. For the current module behavior and flow, use the root `README.md` and each module `README.md` under `client/src/modules` and `server/src/modules`.
+> Note: This file is the original implementation plan. The live code has changed since this plan was written. For the current module behavior and flow, use the root `README.md` and each module `README.md` under `client/src/modules` and `server/src/modules`. The later persistent video-to-audio feature is documented in [`VIDEO_TO_AUDIO.md`](VIDEO_TO_AUDIO.md).
 
 ## 1. Project Structure
 
@@ -584,7 +584,9 @@ SESSION_EXPIRY=86400
 # Storage
 UPLOAD_DIR=/data/docscanner/uploads
 DB_PATH=/data/docscanner/db.sqlite
-MAX_UPLOAD_SIZE=52428800  # 50MB
+MAX_UPLOAD_SIZE=524288000  # 500MB
+MAX_ACTIVE_AUDIO_JOBS=2
+AUDIO_JOB_TIMEOUT_MS=7200000
 
 # Anonymous cleanup
 ANONYMOUS_DOC_EXPIRY=86400  # 24 hours
