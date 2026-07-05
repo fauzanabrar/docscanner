@@ -7,6 +7,8 @@ function VideoCompressTool() {
   const [outFormat, setOutFormat] = useState('mp4')
   const [removeAudio, setRemoveAudio] = useState(false)
   const [error, setError] = useState(null)
+  const [originalSize, setOriginalSize] = useState(null)
+  const [compressedSize, setCompressedSize] = useState(null)
   
   const [processing, setProcessing] = useState(false)
   const [phase, setPhase] = useState('') // '', 'uploading', 'processing'
@@ -45,6 +47,8 @@ function VideoCompressTool() {
             setProcessingProgress(100)
             setProcessingTimemark(null)
             setPhase('done')
+            setOriginalSize(data.originalSize || null)
+            setCompressedSize(data.compressedSize || null)
             if (intervalId) clearInterval(intervalId)
           } else {
             if (phase !== 'processing') {
@@ -104,6 +108,8 @@ function VideoCompressTool() {
     setPhase('uploading')
     setUploadProgress(0)
     setProcessingProgress(0)
+    setOriginalSize(null)
+    setCompressedSize(null)
     setError(null)
 
     const formData = new FormData()
@@ -164,7 +170,23 @@ function VideoCompressTool() {
     setFile(null)
     setProcessingProgress(0)
     setUploadProgress(0)
+    setOriginalSize(null)
+    setCompressedSize(null)
     setError(null)
+  }
+
+  const formatBytes = (bytes) => {
+    if (!bytes || isNaN(bytes)) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }
+
+  const getSavingsPercentage = (original, compressed) => {
+    if (!original || !compressed || original <= 0) return 0
+    const pct = ((original - compressed) / original) * 100
+    return Math.floor(pct)
   }
 
   return (
@@ -178,6 +200,44 @@ function VideoCompressTool() {
         <div style={{ padding: '2rem', backgroundColor: '#e8f5e9', borderRadius: '8px', textAlign: 'center', border: '1px solid #c8e6c9' }}>
           <h3 style={{ color: '#2e7d32', marginBottom: '1rem' }}>Compression Complete!</h3>
           <p style={{ marginBottom: '1.5rem', color: '#1b5e20' }}>Your video has been successfully compressed and is ready to download.</p>
+          
+          {originalSize && compressedSize && (
+            <div style={{ 
+              backgroundColor: 'white', 
+              borderRadius: '8px', 
+              padding: '1.25rem 2rem', 
+              marginBottom: '1.5rem', 
+              boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+              display: 'inline-flex',
+              gap: '1.5rem',
+              alignItems: 'center',
+              border: '1px solid #e0e0e0',
+              flexWrap: 'wrap',
+              justifyContent: 'center'
+            }}>
+              <div style={{ textAlign: 'left' }}>
+                <span style={{ fontSize: '0.85rem', color: '#666', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Original Size</span>
+                <span style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#333' }}>{formatBytes(originalSize)}</span>
+              </div>
+              <div style={{ fontSize: '1.5rem', color: '#bdbdbd' }}>➔</div>
+              <div style={{ textAlign: 'left' }}>
+                <span style={{ fontSize: '0.85rem', color: '#666', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Compressed Size</span>
+                <span style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#2e7d32' }}>{formatBytes(compressedSize)}</span>
+              </div>
+              <div style={{ 
+                backgroundColor: '#e8f5e9', 
+                color: '#2e7d32', 
+                fontWeight: 'bold', 
+                padding: '0.4rem 0.8rem', 
+                borderRadius: '16px',
+                fontSize: '0.9rem',
+                border: '1px solid #a5d6a7',
+                marginLeft: '0.5rem'
+              }}>
+                Saved {getSavingsPercentage(originalSize, compressedSize)}%
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
             <a 
               href={`/api/video/result/${jobId}`} 

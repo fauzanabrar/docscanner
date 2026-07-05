@@ -1279,7 +1279,7 @@ router.post('/video/compress', videoUpload.single('file'), async (req, res) => {
     const ext = isWebm ? 'webm' : 'mp4'
     const outputPath = path.join(tmpdir(), `compressed_${Date.now()}.${ext}`)
 
-    videoJobs.set(jobId, { type: 'compress', status: 'processing', percent: -1, timemark: '00:00:00' })
+    videoJobs.set(jobId, { type: 'compress', status: 'processing', percent: -1, timemark: '00:00:00', originalSize: req.file.size })
     saveJobs()
     res.json({ message: 'Compression started', jobId })
 
@@ -1351,8 +1351,24 @@ router.post('/video/compress', videoUpload.single('file'), async (req, res) => {
           
           videoJobs.set(jobId, p)
         })
-        .on('end', () => {
-          videoJobs.set(jobId, { status: 'done', resultPath: outputPath, filename: compressedFilename, percent: 100, timemark: 'Done' })
+        .on('end', async () => {
+          let compressedSize = 0
+          try {
+            const stats = await stat(outputPath)
+            compressedSize = stats.size
+          } catch (e) {
+            console.error('Failed to stat compressed file:', e)
+          }
+          const job = videoJobs.get(jobId) || {}
+          videoJobs.set(jobId, {
+            status: 'done',
+            resultPath: outputPath,
+            filename: compressedFilename,
+            percent: 100,
+            timemark: 'Done',
+            originalSize: job.originalSize || 0,
+            compressedSize
+          })
           saveJobs()
           unlink(inputPath).catch(console.error)
         })
