@@ -113,6 +113,17 @@ The endpoint returns the audio file only when the job is complete. A missing res
 
 Deletion is idempotent. For active jobs it terminates the subprocess, removes temporary and output files, deletes the registry entry, and persists that deletion before returning success.
 
+## YouTube / URL Cookie Authentication
+
+URL conversions share the global `cookies.txt` credential file with Download Video and Transcribe Video.
+
+- **File location (host):** `docscanner/cookies.txt` (project root)
+- **Mount path (container):** `/data/docscanner/cookies.txt`
+- **Env variable:** `YOUTUBE_COOKIES=/data/docscanner/cookies.txt`
+- **Format:** Netscape cookie file (exported via a browser extension such as *Get cookies.txt LOCALLY*)
+- **Live reload:** The bind mount means updating `cookies.txt` on the host takes effect on the **next** `yt-dlp` call — no container restart needed.
+- **Expiry:** YouTube session cookies expire periodically. Replace the file with a fresh export when bot-detection errors reappear.
+
 ## Limits and safeguards
 
 - Default source limit: 500 MB through `MAX_UPLOAD_SIZE`.
