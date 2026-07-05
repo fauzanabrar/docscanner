@@ -492,7 +492,7 @@ function formatRangeLabel(indices) {
 
 // ─── Video Tools ────────────────────────────────────────────────────────────────
 
-function getDownloadArgs(url, downloadFormat, filepath) {
+function getDownloadArgs(url, downloadFormat, filepath, client = 'web') {
   const isAudio = downloadFormat === 'mp3'
   const isWebm = downloadFormat.endsWith('-webm')
   const args = [
@@ -501,9 +501,11 @@ function getDownloadArgs(url, downloadFormat, filepath) {
     '--ffmpeg-location', ffmpegStatic,
     '--no-playlist',
     '--newline',
-    '--js-runtimes', 'node',
-    '--extractor-args', 'youtube:player_client=web'
+    '--js-runtimes', 'node'
   ]
+  if (client) {
+    args.push('--extractor-args', `youtube:player_client=${client}`)
+  }
   if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) {
     args.push('--cookies', YOUTUBE_COOKIES)
   }
@@ -993,31 +995,41 @@ router.post('/video/size', async (req, res) => {
     const require = createRequire(import.meta.url)
     const ytdlpBin = YTDLP_BIN
 
-    const args = [url, '--no-playlist', '--js-runtimes', 'node', '--extractor-args', 'youtube:player_client=web', '--print', 'filesize_approx']
-    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
-    const fmtArgs = getDownloadArgs(url, downloadFormat, '/dev/null')
-    const fmtIdx = fmtArgs.indexOf('-f')
-    if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
-    const mergeIdx = fmtArgs.indexOf('--merge-output-format')
-    if (mergeIdx !== -1) args.push('--merge-output-format', fmtArgs[mergeIdx + 1])
-    const audioIdx = fmtArgs.indexOf('--extract-audio')
-    if (audioIdx !== -1) args.push('--extract-audio', '--audio-format', fmtArgs[fmtArgs.indexOf('--audio-format') + 1])
+    const playerClients = ['web', 'android_vr', 'ios', 'mweb', 'tv', null]
+    let sizeBytes = null
 
-    const sizeBytes = await new Promise((resolve) => {
-      const proc = spawn(ytdlpBin, args, { windowsHide: true })
-      let stdout = ''
-      proc.stdout.on('data', (chunk) => { stdout += chunk.toString() })
-      proc.stderr.on('data', () => {})
-      proc.on('close', (code) => {
-        if (code === 0) {
-          const val = parseInt(stdout.trim(), 10)
-          resolve(isNaN(val) ? null : val)
-        } else {
-          resolve(null)
-        }
+    for (const client of playerClients) {
+      const args = [url, '--no-playlist', '--js-runtimes', 'node', '--print', 'filesize_approx']
+      if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
+      if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+      const fmtArgs = getDownloadArgs(url, downloadFormat, '/dev/null', client)
+      const fmtIdx = fmtArgs.indexOf('-f')
+      if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
+      const mergeIdx = fmtArgs.indexOf('--merge-output-format')
+      if (mergeIdx !== -1) args.push('--merge-output-format', fmtArgs[mergeIdx + 1])
+      const audioIdx = fmtArgs.indexOf('--extract-audio')
+      if (audioIdx !== -1) args.push('--extract-audio', '--audio-format', fmtArgs[fmtArgs.indexOf('--audio-format') + 1])
+
+      sizeBytes = await new Promise((resolve) => {
+        const proc = spawn(ytdlpBin, args, { windowsHide: true })
+        let stdout = ''
+        proc.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+        proc.stderr.on('data', () => {})
+        proc.on('close', (code) => {
+          if (code === 0) {
+            const val = parseInt(stdout.trim(), 10)
+            resolve(isNaN(val) ? null : val)
+          } else {
+            resolve(null)
+          }
+        })
+        proc.on('error', () => resolve(null))
       })
-      proc.on('error', () => resolve(null))
-    })
+
+      if (sizeBytes !== null) {
+        break
+      }
+    }
 
     res.json({ sizeBytes, size: formatBytes(sizeBytes) })
   } catch (err) {
@@ -1038,31 +1050,43 @@ router.post('/video/sizes', async (req, res) => {
     const batchFile = path.join(tmpdir(), `batch_urls_${Date.now()}.txt`)
     await writeFile(batchFile, urls.join('\n'))
 
-    const fmtArgs = getDownloadArgs(urls[0], downloadFormat, '/dev/null')
-    const fmtIdx = fmtArgs.indexOf('-f')
-    const mergeIdx = fmtArgs.indexOf('--merge-output-format')
-    const audioIdx = fmtArgs.indexOf('--extract-audio')
+    const playerClients = ['web', 'android_vr', 'ios', 'mweb', 'tv', null]
+    let output = ''
 
-    const args = [
-      '--batch-file', batchFile,
-      '--no-playlist',
-      '--js-runtimes', 'node',
-      '--extractor-args', 'youtube:player_client=web',
-      '--print', '%(id)s %(filesize_approx)s'
-    ]
-    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
-    if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
-    if (mergeIdx !== -1) args.push('--merge-output-format', fmtArgs[mergeIdx + 1])
-    if (audioIdx !== -1) args.push('--extract-audio', '--audio-format', fmtArgs[fmtArgs.indexOf('--audio-format') + 1])
+    for (const client of playerClients) {
+      const fmtArgs = getDownloadArgs(urls[0], downloadFormat, '/dev/null', client)
+      const fmtIdx = fmtArgs.indexOf('-f')
+      const mergeIdx = fmtArgs.indexOf('--merge-output-format')
+      const audioIdx = fmtArgs.indexOf('--extract-audio')
 
-    const output = await new Promise((resolve) => {
-      const proc = spawn(ytdlpBin, args, { windowsHide: true })
-      let stdout = ''
-      proc.stdout.on('data', (chunk) => { stdout += chunk.toString() })
-      proc.stderr.on('data', () => {})
-      proc.on('close', () => resolve(stdout))
-      proc.on('error', () => resolve(''))
-    })
+      const args = [
+        '--batch-file', batchFile,
+        '--no-playlist',
+        '--js-runtimes', 'node',
+        '--print', '%(id)s %(filesize_approx)s'
+      ]
+      if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
+      if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+      if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
+      if (mergeIdx !== -1) args.push('--merge-output-format', fmtArgs[mergeIdx + 1])
+      if (audioIdx !== -1) args.push('--extract-audio', '--audio-format', fmtArgs[fmtArgs.indexOf('--audio-format') + 1])
+
+      output = await new Promise((resolve) => {
+        const proc = spawn(ytdlpBin, args, { windowsHide: true })
+        let stdout = ''
+        proc.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+        proc.stderr.on('data', () => {})
+        proc.on('close', (code) => {
+          if (code === 0) resolve(stdout)
+          else resolve('')
+        })
+        proc.on('error', () => resolve(''))
+      })
+
+      if (output.trim()) {
+        break
+      }
+    }
 
     const sizeMap = {}
     for (const line of output.split('\n')) {
@@ -1098,15 +1122,36 @@ router.post('/video/info', async (req, res) => {
       // ignore
     }
 
-    const info = await youtubedl(finalUrl, {
-      dumpSingleJson: true,
-      flatPlaylist: true,
-      ignoreErrors: true,
-      noWarnings: true,
-      jsRuntimes: 'node',
-      extractorArgs: { youtube: 'player_client=web' },
-      ...(YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES) ? { cookies: YOUTUBE_COOKIES } : {})
-    });
+    const playerClients = ['web', 'android_vr', 'ios', 'mweb', 'tv', null]
+    let info = null
+    let lastError = null
+
+    for (const client of playerClients) {
+      try {
+        const opts = {
+          dumpSingleJson: true,
+          flatPlaylist: true,
+          ignoreErrors: true,
+          noWarnings: true,
+          jsRuntimes: 'node',
+          ...(YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES) ? { cookies: YOUTUBE_COOKIES } : {})
+        }
+        if (client) {
+          opts.extractorArgs = `youtube:player_client=${client}`
+        }
+        info = await youtubedl(finalUrl, opts)
+        if (info && (info.title || info.entries)) {
+          lastError = null
+          break
+        }
+      } catch (err) {
+        lastError = err
+      }
+    }
+
+    if (lastError || !info) {
+      throw lastError || new Error('Failed to fetch info')
+    }
 
     res.json(info);
   } catch (err) {
@@ -1137,62 +1182,79 @@ router.post('/video/download', async (req, res) => {
       const filepath = path.join(tmpdir(), filename)
 
       const ytdlpBin = YTDLP_BIN
-      const args = getDownloadArgs(url, downloadFormat, filepath)
+      const playerClients = ['web', 'android_vr', 'ios', 'mweb', 'tv', null]
+      let lastError = null
+      let downloadSucceeded = false
 
-      await new Promise((resolve, reject) => {
-        const proc = spawn(ytdlpBin, args, { windowsHide: true })
-        let stderrData = ''
+      for (const client of playerClients) {
+        try {
+          const args = getDownloadArgs(url, downloadFormat, filepath, client)
+          await new Promise((resolve, reject) => {
+            const proc = spawn(ytdlpBin, args, { windowsHide: true })
+            let stderrData = ''
 
-        const parseOutput = (text) => {
-          const lines = text.replace(/\r/g, '\n').split('\n')
-          for (const line of lines) {
-            const trimmedLine = line.trim()
-            if (!trimmedLine) continue
-            
-            const pctMatch = trimmedLine.match(/\[download\]\s+([\d.]+)%\s+of\s+(.+?)(?:\s+at\s+(.+?))?(?:\s+ETA\s+(.+))?\s*$/)
-            if (pctMatch) {
-              const pct = parseFloat(pctMatch[1])
-              const totalSize = pctMatch[2]?.trim() || ''
-              const speed = pctMatch[3]?.trim() || ''
-              const eta = pctMatch[4]?.trim() || ''
-              const job = videoJobs.get(jobId)
-              if (job && job.status === 'processing') {
-                job.progress = Math.min(Math.floor(pct), 99)
-                job.totalSize = totalSize
-                job.speed = speed
-                job.eta = eta
-                job.dlInfo = [totalSize, speed, eta ? `ETA ${eta}` : ''].filter(Boolean).join(' | ')
-                videoJobs.set(jobId, job)
+            const parseOutput = (text) => {
+              const lines = text.replace(/\r/g, '\n').split('\n')
+              for (const line of lines) {
+                const trimmedLine = line.trim()
+                if (!trimmedLine) continue
+                
+                const pctMatch = trimmedLine.match(/\[download\]\s+([\d.]+)%\s+of\s+(.+?)(?:\s+at\s+(.+?))?(?:\s+ETA\s+(.+))?\s*$/)
+                if (pctMatch) {
+                  const pct = parseFloat(pctMatch[1])
+                  const totalSize = pctMatch[2]?.trim() || ''
+                  const speed = pctMatch[3]?.trim() || ''
+                  const eta = pctMatch[4]?.trim() || ''
+                  const job = videoJobs.get(jobId)
+                  if (job && job.status === 'processing') {
+                    job.progress = Math.min(Math.floor(pct), 99)
+                    job.totalSize = totalSize
+                    job.speed = speed
+                    job.eta = eta
+                    job.dlInfo = [totalSize, speed, eta ? `ETA ${eta}` : ''].filter(Boolean).join(' | ')
+                    videoJobs.set(jobId, job)
+                  }
+                }
+                if (trimmedLine.includes('[Merger]') || trimmedLine.includes('[ffmpeg]') || trimmedLine.includes('Merging')) {
+                  const job = videoJobs.get(jobId)
+                  if (job && job.status === 'processing') {
+                    job.progress = 99
+                    job.dlInfo = 'Merging audio and video...'
+                    videoJobs.set(jobId, job)
+                  }
+                }
               }
             }
-            if (trimmedLine.includes('[Merger]') || trimmedLine.includes('[ffmpeg]') || trimmedLine.includes('Merging')) {
-              const job = videoJobs.get(jobId)
-              if (job && job.status === 'processing') {
-                job.progress = 99
-                job.dlInfo = 'Merging audio and video...'
-                videoJobs.set(jobId, job)
-              }
-            }
+
+            proc.stdout.on('data', (chunk) => parseOutput(chunk.toString()))
+            proc.stderr.on('data', (chunk) => {
+              const text = chunk.toString()
+              stderrData += text
+              parseOutput(text)
+            })
+
+            proc.on('close', (code) => {
+              if (code === 0) resolve()
+              else reject(new Error(stderrData || `yt-dlp exited with code ${code}`))
+            })
+
+            proc.on('error', (err) => reject(err))
+          })
+
+          if (existsSync(filepath)) {
+            downloadSucceeded = true
+            break
+          }
+        } catch (err) {
+          lastError = err
+          if (existsSync(filepath)) {
+            await unlink(filepath).catch(() => {})
           }
         }
+      }
 
-        proc.stdout.on('data', (chunk) => parseOutput(chunk.toString()))
-        proc.stderr.on('data', (chunk) => {
-          const text = chunk.toString()
-          stderrData += text
-          parseOutput(text)
-        })
-
-        proc.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(stderrData || `yt-dlp exited with code ${code}`))
-        })
-
-        proc.on('error', (err) => reject(err))
-      })
-
-      if (!existsSync(filepath)) {
-        throw new Error('Video downloaded but output file not found.')
+      if (!downloadSucceeded) {
+        throw lastError || new Error('Video downloaded but output file not found.')
       }
 
       videoJobs.set(jobId, { status: 'done', resultPath: filepath, filename, progress: 100, dlInfo: '' })
