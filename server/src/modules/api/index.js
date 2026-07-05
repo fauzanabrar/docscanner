@@ -1286,11 +1286,11 @@ router.post('/video/compress', videoUpload.single('file'), async (req, res) => {
     const totalSeconds = duration ? parseFloat(duration) : null
 
     const qualitySettings = {
-      '240p': { res: '426x240', crfMp4: 30, crfWebm: 42 },
-      '360p': { res: '640x360', crfMp4: 28, crfWebm: 39 },
-      '480p': { res: '854x480', crfMp4: 26, crfWebm: 36 },
-      '720p': { res: '1280x720', crfMp4: 24, crfWebm: 33 },
-      '1080p': { res: '1920x1080', crfMp4: 22, crfWebm: 30 }
+      '240p': { res: '426x240', crfMp4: 30, crfWebm: 42, maxrate: '400k', bufsize: '800k' },
+      '360p': { res: '640x360', crfMp4: 28, crfWebm: 39, maxrate: '700k', bufsize: '1400k' },
+      '480p': { res: '854x480', crfMp4: 26, crfWebm: 36, maxrate: '1200k', bufsize: '2400k' },
+      '720p': { res: '1280x720', crfMp4: 24, crfWebm: 33, maxrate: '2500k', bufsize: '5000k' },
+      '1080p': { res: '1920x1080', crfMp4: 22, crfWebm: 30, maxrate: '5000k', bufsize: '10000k' }
     }
 
     const qs = qualitySettings[quality] || qualitySettings['480p']
@@ -1302,6 +1302,8 @@ router.post('/video/compress', videoUpload.single('file'), async (req, res) => {
       `-preset ${speed}`, // ultrafast, fast, medium, slow
       isWebm ? `-crf ${qs.crfWebm}` : `-crf ${qs.crfMp4}`,
       isWebm ? '-b:v 0' : '',
+      `-maxrate ${qs.maxrate}`,
+      `-bufsize ${qs.bufsize}`,
       `-s ${qs.res}`
     ].filter(Boolean)
 

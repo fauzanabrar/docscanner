@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react'
 function VideoCompressTool() {
   const [file, setFile] = useState(null)
   const [quality, setQuality] = useState('480p')
-  const [speed, setSpeed] = useState('ultrafast')
+  const [speed, setSpeed] = useState('fast')
   const [outFormat, setOutFormat] = useState('mp4')
   const [removeAudio, setRemoveAudio] = useState(false)
   const [error, setError] = useState(null)
