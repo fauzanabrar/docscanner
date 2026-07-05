@@ -7,6 +7,8 @@ import ImageResizeTool from '../modules/tools/ImageResizeTool'
 import ImageCompressTool from '../modules/tools/ImageCompressTool'
 import VideoDownloadTool from '../modules/tools/VideoDownloadTool'
 import VideoCompressTool from '../modules/tools/VideoCompressTool'
+import VideoTranscribeTool from '../modules/tools/VideoTranscribeTool'
+import VideoAudioTool from '../modules/tools/VideoAudioTool'
 
 const PDF_TOOLS = [
   {
@@ -64,7 +66,9 @@ const TOOL_COMPONENTS = {
   imageresize: ImageResizeTool,
   imagecompress: ImageCompressTool,
   videodownload: VideoDownloadTool,
-  videocompress: VideoCompressTool
+  videocompress: VideoCompressTool,
+  videotranscribe: VideoTranscribeTool,
+  videoaudio: VideoAudioTool
 }
 
 const VIDEO_TOOLS = [
@@ -81,6 +85,20 @@ const VIDEO_TOOLS = [
     description: 'Reduce video file size by adjusting resolution and bitrate.',
     icon: '🗜️',
     detail: 'Smaller video size'
+  },
+  {
+    id: 'videotranscribe',
+    title: 'Transcribe Video',
+    description: 'Generate downloadable subtitles (.srt) from a video or audio file using on-device speech recognition.',
+    icon: '📝',
+    detail: 'Video → .srt subtitles'
+  },
+  {
+    id: 'videoaudio',
+    title: 'Video to Audio',
+    description: 'Extract downloadable audio from an uploaded video or supported video URL.',
+    icon: '♫',
+    detail: 'Video or URL to audio'
   }
 ]
 
@@ -184,7 +202,7 @@ function ToolsPage() {
       )}
 
       {ActiveComponent && (
-        <div className="tool-active-panel">
+        <div className="tool-active-panel" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: 'calc(100vh - 120px)', paddingBottom: '4rem' }}>
           <ActiveComponent />
         </div>
       )}
