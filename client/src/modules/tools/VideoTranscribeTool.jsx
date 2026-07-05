@@ -206,7 +206,7 @@ function VideoTranscribeTool() {
     setJobId(newJobId)
     localStorage.setItem('transcribeJobId', newJobId)
     setProcessing(true)
-    setPhase(sourceType === 'upload' ? 'uploading' : 'processing')
+    setPhase('uploading')
     setUploadProgress(0); setPercent(0); setEta(null); setDuration(null)
     setSrtText(''); setError(null)
     if (language && language !== 'auto') setSourceLang(language)
@@ -536,9 +536,9 @@ function VideoTranscribeTool() {
           {processing && phase === 'uploading' && (
             <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '0.9rem' }}>
-                <strong>Uploading file...</strong>
+                <strong>{sourceType === 'upload' ? 'Uploading file...' : 'Starting transcription...'}</strong>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <span>{uploadProgress}%</span>
+                  {sourceType === 'upload' && <span>{uploadProgress}%</span>}
                   <button type="button" onClick={handleClearJob}
                     style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', backgroundColor: '#fff', color: '#d32f2f', border: '1px solid #d32f2f', borderRadius: '4px', cursor: 'pointer', fontWeight: '600' }}>
                     Cancel
@@ -546,7 +546,7 @@ function VideoTranscribeTool() {
                 </div>
               </div>
               <div style={{ width: '100%', height: '8px', background: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                <div style={{ width: `${uploadProgress}%`, height: '100%', background: '#1976d2', transition: 'width 0.2s' }} />
+                <div style={{ width: `${sourceType === 'upload' ? uploadProgress : 100}%`, height: '100%', background: '#1976d2', transition: 'width 0.2s' }} />
               </div>
             </div>
           )}
