@@ -1317,7 +1317,7 @@ router.post('/video/compress', videoUpload.single('file'), async (req, res) => {
 
     const originalname = req.file.originalname || `video${isWebm ? '.webm' : '.mp4'}`
     const baseName = originalname.substring(0, originalname.lastIndexOf('.')) || originalname
-    const compressedFilename = `compressed_${baseName}${extName}`
+    const compressedFilename = `compressed_${baseName}.${ext}`
 
     // Process asynchronously
     ;(async () => {

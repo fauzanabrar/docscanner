@@ -20,14 +20,14 @@ function VideoCompressTool() {
   const qualities = ['240p', '360p', '480p', '720p', '1080p']
 
   useEffect(() => {
-    if (!jobId) {
+    if (!jobId || phase === 'uploading' || phase === 'done') {
       return
     }
     
     setProcessing(true)
-    setPhase('processing')
 
-    const interval = setInterval(async () => {
+    let intervalId
+    const checkJob = async () => {
       try {
         const res = await fetch(`/api/video/job/${jobId}`)
         if (res.ok) {
@@ -39,14 +39,17 @@ function VideoCompressTool() {
             setPhase('')
             setJobId(null)
             localStorage.removeItem('compressJobId')
-            clearInterval(interval)
+            if (intervalId) clearInterval(intervalId)
           } else if (data.status === 'done') {
             setProcessingStatus('Compression complete!')
             setProcessingProgress(100)
             setProcessingTimemark(null)
             setPhase('done')
-            clearInterval(interval)
+            if (intervalId) clearInterval(intervalId)
           } else {
+            if (phase !== 'processing') {
+              setPhase('processing')
+            }
             let currentP = 0
             if (data.percent === -1) {
               setProcessingTimemark(data.timemark || '00:00:00')
@@ -70,15 +73,20 @@ function VideoCompressTool() {
           setPhase('')
           setJobId(null)
           localStorage.removeItem('compressJobId')
-          clearInterval(interval)
+          if (intervalId) clearInterval(intervalId)
         }
       } catch (e) {
         // silently fail on poll error
       }
-    }, 1000)
+    }
 
-    return () => clearInterval(interval)
-  }, [jobId])
+    checkJob()
+    intervalId = setInterval(checkJob, 1000)
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+    }
+  }, [jobId, phase])
 
   const handleCompress = (e) => {
     e.preventDefault()
