@@ -33,8 +33,12 @@ function sanitizeText(text) {
 async function ensureTransformers() {
   if (!transformers) {
     transformers = await import('@xenova/transformers')
-    transformers.env.cacheDir = path.join(tmpdir(), 'docscanner_transformers_cache')
+    transformers.env.cacheDir = process.env.TRANSFORMERS_CACHE || path.join(tmpdir(), 'docscanner_transformers_cache')
     transformers.env.allowLocalModels = false
+    // Limit ONNX intra-op threads to avoid CPU contention on small ARM servers.
+    // Defaults to all available cores if unset.
+    const threads = parseInt(process.env.ORT_NUM_THREADS, 10)
+    if (threads > 0) transformers.env.backends.onnx.numThreads = threads
   }
   return transformers
 }

@@ -13,8 +13,10 @@ services:
       - JWT_SECRET=${JWT_SECRET:-change-this-secret}
       - UPLOAD_DIR=/data/docscanner/uploads
       - DB_PATH=/data/docscanner/db.sqlite
+      - TRANSFORMERS_CACHE=/data/docscanner/cache
+      # ORT_NUM_THREADS=2  # Uncomment and lower on small ARM CPUs (default: all cores)
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

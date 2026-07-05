@@ -96,10 +96,10 @@ The backend video download utility utilizes `yt-dlp` under the hood, which may f
 
 The Transcribe Video tool runs speech-to-text (and translation) locally via `@xenova/transformers` (ONNX) — no API key required. Notes:
 
-- On the **first** transcription the Whisper model (~40MB for `tiny`, ~80MB for `base`) is downloaded from Hugging Face and cached under the OS temp directory, so an internet connection is required on first run. Subsequent runs are offline.
+- On the **first** transcription the Whisper model (~40MB for `tiny`, ~80MB for `base`) is downloaded from Hugging Face and cached under the OS temp directory, so an internet connection is required on first run. Subsequent runs are offline. In Docker, models persist at the `TRANSFORMERS_CACHE` path (default `/data/docscanner/cache`) across container restarts.
 - The **first** translation downloads the `m2m100_418M` model (~630MB) once, then it is cached and reused. CPU translation uses greedy decoding at roughly ~2s per subtitle line.
-- Native inference is provided by `onnxruntime-node`, which ships prebuilt binaries for Windows/macOS/Linux (glibc). Under **pnpm**, the build scripts for `onnxruntime-node`, `ffmpeg-static`, and `youtube-dl-exec` are allowlisted in `server/pnpm-workspace.yaml` (`onlyBuiltDependencies`) so their binaries install correctly.
-- **Docker note:** `onnxruntime-node` needs a glibc runtime. The default `node:20-alpine` image (musl) does not ship a compatible build, so for transcription in Docker use a glibc base such as `node:20-slim` (install `python3` and `ffmpeg`'s runtime deps via `apt-get` instead of `apk`).
+- Native inference is provided by `onnxruntime-node`, which ships prebuilt binaries for Windows/macOS/Linux (glibc). The Docker image uses `node:20-slim` (glibc) — Alpine-based images are not compatible. On ARM servers, set `ORT_NUM_THREADS=2` to reduce CPU contention on small instances.
+- **Docker note:** The Dockerfile uses `node:20-slim` with `python3`, `ffmpeg`, and glibc runtime libs installed via `apt-get`. No manual system setup is needed inside the container.
 
 Run the app from the repository root:
 
@@ -123,7 +123,17 @@ cd server && npm run dev
 docker compose up --build
 ```
 
-The Docker image builds the Vite client, installs the Express server runtime dependencies, and serves the built frontend from the Node container on port `3000`.
+The Docker image builds the Vite client, installs the Express server runtime dependencies, and serves the built frontend from the Node container on port `3000`. The base image is `node:20-slim` (Debian/glibc) which is required for `onnxruntime-node` ARM inference.
+
+### ARM server tuning
+
+On small ARM instances (e.g. 4-core A1), lower the ONNX thread count to reduce CPU contention:
+
+```dotenv
+ORT_NUM_THREADS=2
+```
+
+Models are cached at `/data/docscanner/cache` (mounted volume) so repeated transcriptions/translations skip the download after the first run.
 
 ## Module Map
 
