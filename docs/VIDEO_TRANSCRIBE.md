@@ -89,12 +89,12 @@ Progress events (polled every 1.5 s via `GET /api/transcribe/status/:jobId`) rep
 
 URL-based transcription shares the global `cookies.txt` credential file with Download Video and Video to Audio.
 
-- **File location (host):** `docscanner/cookies.txt` (project root)
-- **Mount path (container):** `/data/docscanner/cookies.txt`
+- **Primary setup:** Open **Video Tools → Transcribe Video**, select **Video URL**, then use **YouTube Cookies** to paste a Netscape-format export. Saving takes effect on the next `yt-dlp` invocation without restarting the server.
+- **Storage:** In Docker the app-managed file is `/data/docscanner/cookies.txt` in the persistent `docscanner-data` volume. In local development, when `YOUTUBE_COOKIES` is unset, it defaults to `<UPLOAD_DIR>/video-jobs/cookies.txt` (or the equivalent OS temporary directory).
 - **Env variable:** `YOUTUBE_COOKIES=/data/docscanner/cookies.txt`
 - **Format:** Netscape cookie file (exported via browser extension, e.g. *Get cookies.txt LOCALLY*)
-- **Live reload:** The bind mount means updating `cookies.txt` on the host takes effect on the **next** `yt-dlp` invocation — no container restart required.
-- **Expiry:** YouTube session cookies expire over time. When bot-detection errors reappear, replace `cookies.txt` with a fresh export.
+- **Expiry:** YouTube session cookies expire over time. When bot-detection errors reappear, open the dialog and save a fresh export.
+- **Security:** Cookies are plaintext, global to the instance, and accepted by unauthenticated endpoints. This workflow is intended for self-hosted, single-tenant deployments; use a secondary account and do not expose it as a multi-tenant service without authentication and per-user isolation.
 
 ---
 

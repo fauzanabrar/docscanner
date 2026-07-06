@@ -34,7 +34,7 @@ Video-to-audio jobs reject private-network URLs, cap uploads and URL downloads a
 
 ### YouTube / yt-dlp Cookie Authentication
 
-All features that download from YouTube — **Download Video**, **Video to Audio (URL)**, and **Transcribe Video (URL)** — share a single `cookies.txt` file in Netscape format, mounted into the container at `/data/docscanner/cookies.txt` and referenced via the `YOUTUBE_COOKIES` environment variable. Refreshing the file on the host takes effect immediately without restarting the container (bind mount). When cookies expire, YouTube bot-detection errors will reappear and the file must be updated with a fresh export.
+All features that download from YouTube — **Download Video**, **Video to Audio (URL)**, and **Transcribe Video (URL)** — provide a **YouTube Cookies** dialog for saving a Netscape-format browser export. The app stores one global cookie file in the persistent Docker volume (or `YOUTUBE_COOKIES` when configured), and saves or clears it without a restart. Cookies are plaintext credentials intended for a self-hosted, single-tenant instance; use a secondary account and refresh them through the dialog when YouTube bot-detection errors return.
 
 See [`docs/VIDEO_TO_AUDIO.md`](docs/VIDEO_TO_AUDIO.md), [`docs/VIDEO_COMPRESSION.md`](docs/VIDEO_COMPRESSION.md), and [`docs/VIDEO_TRANSCRIBE.md`](docs/VIDEO_TRANSCRIBE.md) for lifecycle guarantees, API contracts, storage layouts, limits, and recovery behaviors.
 

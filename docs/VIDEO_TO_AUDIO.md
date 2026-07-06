@@ -117,12 +117,12 @@ Deletion is idempotent. For active jobs it terminates the subprocess, removes te
 
 URL conversions share the global `cookies.txt` credential file with Download Video and Transcribe Video.
 
-- **File location (host):** `docscanner/cookies.txt` (project root)
-- **Mount path (container):** `/data/docscanner/cookies.txt`
+- **Primary setup:** In the **Video URL** tab, use **YouTube Cookies** to paste a Netscape-format export. Saving takes effect on the next `yt-dlp` invocation without restarting the server.
+- **Storage:** In Docker the app-managed file is `/data/docscanner/cookies.txt` in the persistent `docscanner-data` volume. In local development, when `YOUTUBE_COOKIES` is unset, it defaults to `<UPLOAD_DIR>/video-jobs/cookies.txt` (or the equivalent OS temporary directory).
 - **Env variable:** `YOUTUBE_COOKIES=/data/docscanner/cookies.txt`
 - **Format:** Netscape cookie file (exported via a browser extension such as *Get cookies.txt LOCALLY*)
-- **Live reload:** The bind mount means updating `cookies.txt` on the host takes effect on the **next** `yt-dlp` call — no container restart needed.
-- **Expiry:** YouTube session cookies expire periodically. Replace the file with a fresh export when bot-detection errors reappear.
+- **Expiry:** YouTube session cookies expire periodically. Open the dialog and save a fresh export when bot-detection errors reappear.
+- **Security:** Cookies are plaintext, global to the instance, and accepted by unauthenticated endpoints. This workflow is intended for self-hosted, single-tenant deployments; use a secondary account and add authentication plus per-user isolation before any multi-tenant deployment.
 
 ## Limits and safeguards
 

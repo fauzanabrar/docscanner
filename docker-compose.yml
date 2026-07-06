@@ -7,7 +7,6 @@ services:
       - "3002:3000"
     volumes:
       - docscanner-data:/data/docscanner
-      - ./cookies.txt:/data/docscanner/cookies.txt
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -15,6 +14,7 @@ services:
       - UPLOAD_DIR=/data/docscanner/uploads
       - DB_PATH=/data/docscanner/db.sqlite
       - TRANSFORMERS_CACHE=/data/docscanner/cache
+      # Managed via Video Tools -> "YouTube Cookies"; stored in the named volume.
       - YOUTUBE_COOKIES=/data/docscanner/cookies.txt
       # ORT_NUM_THREADS=2  # Uncomment and lower on small ARM CPUs (default: all cores)
     healthcheck:

@@ -3,7 +3,7 @@ import multer from 'multer'
 import { PDFDocument } from 'pdf-lib'
 import { v4 as uuidv4 } from 'uuid'
 import { writeFile, rename, mkdir, unlink, readdir, stat } from 'fs/promises'
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'fs'
 import path from 'path'
 import { tmpdir } from 'os'
 import { lookup } from 'dns/promises'
@@ -48,6 +48,59 @@ const AUDIO_RESULTS_DIR = path.join(JOBS_ROOT, 'audio')
 const JOBS_FILE = path.join(JOBS_ROOT, 'jobs.json')
 const LEGACY_JOBS_FILE = path.join(tmpdir(), 'docscanner_video_jobs.json')
 mkdirSync(AUDIO_RESULTS_DIR, { recursive: true })
+
+// Cookie file yt-dlp uses for authenticated YouTube access. Prefer the env path
+// (Docker), else a writable path in the persistent jobs volume so the in-app
+// cookie manager works in local dev too.
+const COOKIE_FILE = YOUTUBE_COOKIES || path.join(JOBS_ROOT, 'cookies.txt')
+const MAX_COOKIE_BYTES = 256 * 1024
+
+// yt-dlp should only get --cookies when we actually have a non-empty file.
+function cookieFileReady() {
+  try { return existsSync(COOKIE_FILE) && statSync(COOKIE_FILE).size > 0 }
+  catch { return false }
+}
+
+function cookieStatus() {
+  try {
+    if (!existsSync(COOKIE_FILE)) return { present: false, updatedAt: null }
+    const stats = statSync(COOKIE_FILE)
+    return { present: stats.size > 0, updatedAt: stats.size > 0 ? stats.mtime.toISOString() : null }
+  } catch {
+    return { present: false, updatedAt: null }
+  }
+}
+
+// Validate and normalize a pasted Netscape cookies.txt without exposing its contents.
+function normalizeCookieText(raw) {
+  if (typeof raw !== 'string') return { error: 'Cookies must be provided as text.' }
+  let text = raw.replace(/\r\n?/g, '\n').trim()
+  if (!text) return { error: 'Cookie text is empty.' }
+  if (Buffer.byteLength(text, 'utf8') > MAX_COOKIE_BYTES) return { error: 'Cookie file is too large.' }
+
+  const lines = text.split('\n')
+  const dataLines = lines.filter(line => line.trim() && !line.trim().startsWith('#'))
+  const looksNetscape = dataLines.some(line => line.split('\t').length >= 6)
+  if (!looksNetscape) {
+    return { error: 'This does not look like a Netscape cookies.txt file (expected TAB-separated cookie lines). Re-export with a cookies.txt browser extension and paste without reformatting.' }
+  }
+
+  const hasHeader = /^#\s*(Netscape\s+HTTP\s+Cookie\s+File|HTTP\s+Cookie\s+File)/i.test(lines[0] || '')
+  if (!hasHeader) text = `# Netscape HTTP Cookie File\n${text}`
+  return { text: text.endsWith('\n') ? text : `${text}\n` }
+}
+
+function writeCookieFileInPlace(text) {
+  // In-place overwrite (flag 'w') preserves the inode for single-file bind mounts.
+  // Do not use the temporary-file-and-rename pattern used by the job registry.
+  mkdirSync(path.dirname(COOKIE_FILE), { recursive: true })
+  return writeFile(COOKIE_FILE, text, { encoding: 'utf8', flag: 'w' })
+}
+
+function isYtDlpAuthError(error) {
+  const message = error?.message || error?.publicMessage || String(error || '')
+  return /sign in to confirm you.?re not a bot|sign in to confirm your age|confirm you.?re not a bot|this video is only available to|http error 403|use --cookies|bot detection/i.test(message)
+}
 
 const videoJobs = new Map()
 const activeVideoJobs = new Map()
@@ -253,6 +306,36 @@ router.delete('/video/job/:jobId', async (req, res) => {
 
 router.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
+})
+
+// YouTube / yt-dlp cookie management. This self-hosted instance has one global
+// cookie file, matching the rest of the unauthenticated API. Never return contents.
+router.get('/video/cookies', (req, res) => {
+  res.json(cookieStatus())
+})
+
+router.put('/video/cookies', async (req, res) => {
+  const result = normalizeCookieText(req.body?.cookies)
+  if (result.error) return res.status(400).json({ error: result.error })
+
+  try {
+    await writeCookieFileInPlace(result.text)
+    res.json(cookieStatus())
+  } catch (error) {
+    console.error('Failed to write cookie file:', error.message)
+    res.status(500).json({ error: 'Failed to save cookies on the server.' })
+  }
+})
+
+router.delete('/video/cookies', async (req, res) => {
+  try {
+    // Truncate instead of unlinking so a bind-mounted file keeps the same inode.
+    await writeCookieFileInPlace('')
+    res.json({ present: false, updatedAt: null })
+  } catch (error) {
+    console.error('Failed to clear cookie file:', error.message)
+    res.status(500).json({ error: 'Failed to clear cookies on the server.' })
+  }
 })
 
 router.post('/pdf/generate', memoryUpload.array('images', 20), async (req, res) => {
@@ -506,8 +589,8 @@ function getDownloadArgs(url, downloadFormat, filepath, client = 'web') {
   if (client) {
     args.push('--extractor-args', `youtube:player_client=${client}`)
   }
-  if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) {
-    args.push('--cookies', YOUTUBE_COOKIES)
+  if (cookieFileReady()) {
+    args.push('--cookies', COOKIE_FILE)
   }
   if (isAudio) {
     args.push('--extract-audio', '--audio-format', 'mp3', '-f', 'bestaudio/best')
@@ -719,10 +802,12 @@ async function failAudioJob(jobId, error) {
   activeVideoJobs.delete(jobId)
   if (!videoJobs.has(jobId)) return
   console.error(`Audio conversion job ${jobId} failed:`, error)
+  const currentJob = videoJobs.get(jobId)
   videoJobs.set(jobId, {
-    ...videoJobs.get(jobId),
+    ...currentJob,
     status: 'error',
     error: error?.publicMessage || 'Audio conversion failed. Verify the source and try again.',
+    ...(currentJob.sourceType === 'url' && isYtDlpAuthError(error) ? { authRequired: true } : {}),
     detail: '',
     updatedAt: new Date().toISOString()
   })
@@ -814,7 +899,7 @@ async function runUrlAudioConversion({ jobId, url, outputTemplate, outputPath, f
     ]
     if (format !== 'wav') args.push('--audio-quality', bitrate.toUpperCase())
     if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
-    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+    if (cookieFileReady()) args.push('--cookies', COOKIE_FILE)
 
     const subprocess = spawn(YTDLP_BIN, args, { windowsHide: true })
 
@@ -856,15 +941,13 @@ async function runUrlAudioConversion({ jobId, url, outputTemplate, outputPath, f
     } catch (error) {
       if (activeJob?.didTimeout()) throw new AudioJobError('Audio conversion timed out. Try a shorter or smaller video.')
       lastError = new Error(errorOutput || error.message || 'Failed to download the video URL.')
-      const errText = (errorOutput || '').toLowerCase()
-      const isBot = errText.includes('sign in to confirm') || errText.includes('not a bot')
-      if (!isBot) throw lastError
+      if (!isYtDlpAuthError(errorOutput || error)) throw lastError
     }
   }
 
   if (lastError) {
     const msg = lastError.message || String(lastError)
-    if (msg.includes('sign in to confirm') || msg.includes('not a bot')) {
+    if (isYtDlpAuthError(msg)) {
       throw new AudioJobError('YouTube is blocking this request (bot detection). Try a different video URL or upload the file directly.')
     }
     throw lastError
@@ -1001,7 +1084,7 @@ router.post('/video/size', async (req, res) => {
     for (const client of playerClients) {
       const args = [url, '--no-playlist', '--js-runtimes', 'node', '--print', 'filesize_approx']
       if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
-      if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+      if (cookieFileReady()) args.push('--cookies', COOKIE_FILE)
       const fmtArgs = getDownloadArgs(url, downloadFormat, '/dev/null', client)
       const fmtIdx = fmtArgs.indexOf('-f')
       if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
@@ -1066,7 +1149,7 @@ router.post('/video/sizes', async (req, res) => {
         '--print', '%(id)s %(filesize_approx)s'
       ]
       if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
-      if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+      if (cookieFileReady()) args.push('--cookies', COOKIE_FILE)
       if (fmtIdx !== -1) args.push('-f', fmtArgs[fmtIdx + 1])
       if (mergeIdx !== -1) args.push('--merge-output-format', fmtArgs[mergeIdx + 1])
       if (audioIdx !== -1) args.push('--extract-audio', '--audio-format', fmtArgs[fmtArgs.indexOf('--audio-format') + 1])
@@ -1134,7 +1217,7 @@ router.post('/video/info', async (req, res) => {
           ignoreErrors: true,
           noWarnings: true,
           jsRuntimes: 'node',
-          ...(YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES) ? { cookies: YOUTUBE_COOKIES } : {})
+          ...(cookieFileReady() ? { cookies: COOKIE_FILE } : {})
         }
         if (client) {
           opts.extractorArgs = `youtube:player_client=${client}`
@@ -1156,7 +1239,10 @@ router.post('/video/info', async (req, res) => {
     res.json(info);
   } catch (err) {
     console.error('Info error:', err);
-    res.status(500).json({ error: 'Failed to fetch video information. Ensure the URL is valid.' });
+    res.status(500).json({
+      error: 'Failed to fetch video information. Ensure the URL is valid.',
+      ...(isYtDlpAuthError(err) ? { authRequired: true } : {})
+    });
   }
 });
 
@@ -1262,7 +1348,11 @@ router.post('/video/download', async (req, res) => {
     } catch (err) {
       console.error('Download error:', err)
       const msg = err.message || 'Failed to download video.'
-      videoJobs.set(jobId, { status: 'error', error: msg })
+      videoJobs.set(jobId, {
+        status: 'error',
+        error: msg,
+        ...(isYtDlpAuthError(err) ? { authRequired: true } : {})
+      })
       saveJobs()
     }
   })()
@@ -1663,7 +1753,7 @@ async function downloadAudioFromUrl(jobId, url, outputPath, onProgress) {
       '--extractor-retries', '3'
     ]
     if (client) args.push('--extractor-args', `youtube:player_client=${client}`)
-    if (YOUTUBE_COOKIES && existsSync(YOUTUBE_COOKIES)) args.push('--cookies', YOUTUBE_COOKIES)
+    if (cookieFileReady()) args.push('--cookies', COOKIE_FILE)
 
     const subprocess = spawn(YTDLP_BIN, args, { windowsHide: true })
 
@@ -1715,15 +1805,13 @@ async function downloadAudioFromUrl(jobId, url, outputPath, onProgress) {
       lastError = new Error('Download finished but output audio file was not found.')
     } catch (error) {
       lastError = error
-      const errText = (errorOutput || '').toLowerCase()
-      const isBot = errText.includes('sign in to confirm') || errText.includes('not a bot')
-      if (!isBot) break
+      if (!isYtDlpAuthError(errorOutput || error)) break
     }
   }
 
   if (lastError) {
     const msg = lastError.message || String(lastError)
-    if (msg.includes('sign in to confirm') || msg.includes('not a bot')) {
+    if (isYtDlpAuthError(msg)) {
       throw new Error('YouTube is blocking this request (bot detection). Try a different video URL or upload the file directly.')
     }
     throw lastError
@@ -1910,7 +1998,12 @@ router.post('/video/transcribe', videoUpload.single('file'), async (req, res) =>
         // Only report the error if the job still exists (don't resurrect one the
         // client explicitly cancelled).
         if (videoJobs.has(jobId)) {
-          videoJobs.set(jobId, { type: 'transcribe', status: 'error', error: err.message || 'Failed to transcribe video.' })
+          videoJobs.set(jobId, {
+            type: 'transcribe',
+            status: 'error',
+            error: err.message || 'Failed to transcribe video.',
+            ...(url && isYtDlpAuthError(err) ? { authRequired: true } : {})
+          })
           saveJobs()
         }
       }
