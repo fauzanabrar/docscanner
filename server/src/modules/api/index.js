@@ -9,7 +9,7 @@ import { tmpdir } from 'os'
 import { lookup } from 'dns/promises'
 import { isIP } from 'net'
 import { ZipArchive } from 'archiver'
-import youtubedl from 'youtube-dl-exec'
+import youtubeDlExec from 'youtube-dl-exec'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegStatic from 'ffmpeg-static'
 import { Worker } from 'worker_threads'
@@ -20,7 +20,13 @@ import { fileURLToPath } from 'url'
 ffmpeg.setFfmpegPath(ffmpegStatic)
 
 const YOUTUBE_COOKIES = process.env.YOUTUBE_COOKIES || ''
-const YTDLP_BIN = '/usr/local/bin/yt-dlp'
+const SYSTEM_YTDLP_BIN = '/usr/local/bin/yt-dlp'
+// Prefer an explicit override, retain the pip-installed Docker binary when it
+// exists, and otherwise use youtube-dl-exec's platform-specific bundled binary.
+const YTDLP_BIN = process.env.YTDLP_BIN || (
+  existsSync(SYSTEM_YTDLP_BIN) ? SYSTEM_YTDLP_BIN : youtubeDlExec.constants.YOUTUBE_DL_PATH
+)
+const youtubedl = youtubeDlExec.create(YTDLP_BIN)
 const router = Router()
 const MAX_UPLOAD_BYTES = Math.min(
   2 * 1024 * 1024 * 1024,
