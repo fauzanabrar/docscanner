@@ -419,7 +419,7 @@ function VideoDownloadTool() {
   const disabled = singleLoading || fetchingInfo
 
   return (
-    <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+    <div>
       <h2 style={{ marginBottom: '1.5rem', color: '#1976d2' }}>Download Video</h2>
       <p style={{ marginBottom: '2rem', color: '#666', lineHeight: '1.6' }}>
         Download videos from YouTube and other platforms. Paste a video or playlist URL to get started.

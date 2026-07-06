@@ -190,7 +190,7 @@ function VideoCompressTool() {
   }
 
   return (
-    <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+    <div>
       <h2 style={{ marginBottom: '1.5rem', color: '#1976d2' }}>Compress Video</h2>
       <p style={{ marginBottom: '2rem', color: '#666', lineHeight: '1.6' }}>
         Reduce the file size of your videos. Select your target quality and adjust advanced settings.

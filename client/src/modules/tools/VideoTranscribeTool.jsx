@@ -331,7 +331,7 @@ function VideoTranscribeTool() {
   const selectStyle = { width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc', backgroundColor: 'white' }
 
   return (
-    <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+    <div>
       <h2 style={{ marginBottom: '1.5rem', color: '#1976d2' }}>Transcribe Video</h2>
       <p style={{ marginBottom: '2rem', color: '#666', lineHeight: '1.6' }}>
         Upload a video (or audio) file and generate downloadable subtitles as an <code>.srt</code> file — then

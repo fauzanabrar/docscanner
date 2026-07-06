@@ -119,11 +119,13 @@ function ToolsPage() {
   return (
     <div className="tools-page">
       <header className="tools-header">
-        <div>
-          <span className="section-eyebrow">Utilities</span>
-          <h1 className="tools-title">Available Tools</h1>
-          <p className="tools-subtitle">Choose from our collection of PDF and Image processing tools.</p>
-        </div>
+        {!activeTool && (
+          <div>
+            <span className="section-eyebrow">Utilities</span>
+            <h1 className="tools-title">Available Tools</h1>
+            <p className="tools-subtitle">Choose from our collection of PDF and Image processing tools.</p>
+          </div>
+        )}
         {activeTool && (
           <button className="btn-secondary compact" type="button" onClick={() => setActiveTool(null)}>
             ← All tools
