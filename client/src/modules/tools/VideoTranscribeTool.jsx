@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { CookiesButton } from './YtDlpCookiesDialog'
 
 const LANGUAGES = [
   { value: 'auto', label: 'Auto-detect' },
@@ -43,6 +44,7 @@ function VideoTranscribeTool() {
   const [language, setLanguage] = useState('auto')
   const [denoiseMethod, setDenoiseMethod] = useState('none')
   const [error, setError] = useState(null)
+  const [authRequired, setAuthRequired] = useState(false)
 
   const [processing, setProcessing] = useState(false)
   const [phase, setPhase] = useState('') // '', 'uploading', 'processing', 'done'
@@ -97,6 +99,7 @@ function VideoTranscribeTool() {
           const data = await res.json()
           if (data.status === 'error') {
             setError(data.error || 'Transcription failed.')
+            setAuthRequired(Boolean(data.authRequired))
             setProcessing(false); setPhase(''); setJobId(null)
             localStorage.removeItem('transcribeJobId')
             if (intervalId) clearInterval(intervalId)
@@ -208,7 +211,7 @@ function VideoTranscribeTool() {
     setProcessing(true)
     setPhase('uploading')
     setUploadProgress(0); setPercent(0); setEta(null); setDuration(null)
-    setSrtText(''); setError(null)
+    setSrtText(''); setError(null); setAuthRequired(false)
     if (language && language !== 'auto') setSourceLang(language)
 
     const formData = new FormData()
@@ -242,7 +245,11 @@ function VideoTranscribeTool() {
         setPhase('processing')
         setStage(sourceType === 'upload' ? 'Extracting audio track...' : 'Downloading video source...')
       } else {
-        try { setError(JSON.parse(xhr.responseText).error || 'Failed to start transcription') }
+        try {
+          const data = JSON.parse(xhr.responseText)
+          setError(data.error || 'Failed to start transcription')
+          setAuthRequired(Boolean(data.authRequired))
+        }
         catch { setError('Failed to start transcription') }
         setProcessing(false); setPhase(''); setJobId(null)
         localStorage.removeItem('transcribeJobId')
@@ -269,7 +276,7 @@ function VideoTranscribeTool() {
     setJobId(null); localStorage.removeItem('transcribeJobId')
     setTranslateJobId(null); localStorage.removeItem('translateJobId')
     setProcessing(false); setPhase(''); setFile(null); setUrl('')
-    setSrtText(''); setPercent(0); setUploadProgress(0); setError(null)
+    setSrtText(''); setPercent(0); setUploadProgress(0); setError(null); setAuthRequired(false)
     setTranslating(false); setTranslatedSrt(''); setTranslateError(null); setTranslatePercent(0)
     setActiveTab('transcription')
   }
@@ -494,8 +501,11 @@ function VideoTranscribeTool() {
             <div>
               <label htmlFor="transcribeUrl" style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Video URL</label>
               <input id="transcribeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..."
-                value={url} onChange={(e) => setUrl(e.target.value)} required disabled={processing}
+                value={url} onChange={(e) => { setUrl(e.target.value); setAuthRequired(false) }} required disabled={processing}
                 style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }} />
+              <div style={{ marginTop: '0.75rem' }}>
+                <CookiesButton />
+              </div>
             </div>
           )}
 
@@ -531,7 +541,12 @@ function VideoTranscribeTool() {
             </div>
           </div>
 
-          {error && <div style={{ color: '#d32f2f', padding: '0.75rem', backgroundColor: '#ffebee', borderRadius: '4px' }}>{error}</div>}
+          {error && (
+            <div style={{ color: '#d32f2f', padding: '0.75rem', backgroundColor: '#ffebee', borderRadius: '4px' }}>
+              <div>{error}</div>
+              {authRequired && <div style={{ marginTop: '0.75rem' }}><CookiesButton label="Add your YouTube cookies" /></div>}
+            </div>
+          )}
 
           {processing && phase === 'uploading' && (
             <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #e0e0e0' }}>

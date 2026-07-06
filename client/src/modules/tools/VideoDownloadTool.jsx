@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { CookiesButton } from './YtDlpCookiesDialog'
 
 const STORAGE_KEY = 'downloadJobs'
 const UI_STATE_KEY = 'downloadUiState'
@@ -50,6 +51,7 @@ function VideoDownloadTool() {
   const [url, setUrl] = useState('')
   const [downloadFormat, setDownloadFormat] = useState('best')
   const [error, setError] = useState(null)
+  const [authRequired, setAuthRequired] = useState(false)
 
   const [playlistInfo, setPlaylistInfo] = useState(null)
   const [isPlaylist, setIsPlaylist] = useState(false)
@@ -71,7 +73,7 @@ function VideoDownloadTool() {
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText()
-      if (text) { setUrl(text.trim()); setPlaylistInfo(null); setVideoJobs({}); setError(null) }
+      if (text) { setUrl(text.trim()); setPlaylistInfo(null); setVideoJobs({}); setError(null); setAuthRequired(false) }
     } catch {
       setError('Clipboard access denied. Use Ctrl+V to paste manually.')
       setTimeout(() => setError(null), 3000)
@@ -172,6 +174,7 @@ function VideoDownloadTool() {
           const data = await res.json()
           if (data.status === 'error') {
             setError(data.error || 'Download failed.')
+            setAuthRequired(Boolean(data.authRequired))
             setSingleLoading(false); setSinglePhase(''); setSingleJobId(null)
             removeJobFromStorage(singleJobId)
             clearInterval(interval)
@@ -207,6 +210,7 @@ function VideoDownloadTool() {
             const data = await res.json()
             if (data.status === 'error') {
               current[jid] = { ...job, status: 'error', error: data.error }
+              if (data.authRequired) setAuthRequired(true)
               changed = true
               removeJobFromStorage(jid)
             } else if (data.status === 'done') {
@@ -235,7 +239,7 @@ function VideoDownloadTool() {
     if (!/^https?:\/\//i.test(finalUrl)) finalUrl = 'https://' + finalUrl
     try { new URL(finalUrl) } catch { setError('Please enter a valid URL.'); return }
 
-    setError(null); setFetchingInfo(true); setPlaylistInfo(null); setVideoJobs({}); setVideoSizes({}); setSingleVideoSize(null)
+    setError(null); setAuthRequired(false); setFetchingInfo(true); setPlaylistInfo(null); setVideoJobs({}); setVideoSizes({}); setSingleVideoSize(null)
     try {
       const response = await fetch('/api/video/info', {
         method: 'POST',
@@ -245,6 +249,7 @@ function VideoDownloadTool() {
       const data = await response.json()
       if (!response.ok) {
         setError(data.error || 'Failed to fetch video information.')
+        setAuthRequired(Boolean(data.authRequired))
       } else {
         setPlaylistInfo(data)
         const isPl = data.entries && data.entries.length > 1
@@ -295,7 +300,7 @@ function VideoDownloadTool() {
       saveJobToStorage(newJobId, { single: true, url: videoUrl, title, index })
       setSingleLoading(true); setSinglePhase('downloading')
       setSingleStatus('Initializing...'); setSingleProgress(0); setSingleDlInfo('')
-      setError(null)
+      setError(null); setAuthRequired(false)
     } else {
       const prev = Object.entries(videoJobsRef.current).find(([, v]) => v.index === index)
       const cleaned = { ...videoJobsRef.current }
@@ -315,6 +320,7 @@ function VideoDownloadTool() {
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
         const errMsg = data.error || 'Failed to initialize download.'
+        setAuthRequired(Boolean(data.authRequired))
         if (!isPlaylist) {
           setError(errMsg); setSingleLoading(false); setSinglePhase('')
           setSingleJobId(null); removeJobFromStorage(newJobId)
@@ -398,7 +404,7 @@ function VideoDownloadTool() {
     }
     localStorage.removeItem(UI_STATE_KEY)
     setSingleLoading(false); setSinglePhase(''); setSingleStatus(''); setSingleProgress(0); setSingleDlInfo('')
-    setUrl(''); setError(null); setPlaylistInfo(null); setVideoJobs({}); setIsPlaylist(false)
+    setUrl(''); setError(null); setAuthRequired(false); setPlaylistInfo(null); setVideoJobs({}); setIsPlaylist(false)
   }
 
   const getVideoJobStatus = (idx) => {
@@ -427,14 +433,14 @@ function VideoDownloadTool() {
               id="url"
               type="url"
               value={url}
-              onChange={(e) => { setUrl(e.target.value); setPlaylistInfo(null); setVideoJobs({}); setError(null) }}
+              onChange={(e) => { setUrl(e.target.value); setPlaylistInfo(null); setVideoJobs({}); setError(null); setAuthRequired(false) }}
               placeholder="e.g. https://www.youtube.com/watch?v=... or playlist URL"
               required
               style={{ width: '100%', padding: '0.75rem 2.5rem 0.75rem 0.75rem', borderRadius: '4px', border: '1px solid #ccc', fontSize: '1rem', boxSizing: 'border-box' }}
               disabled={disabled}
             />
             {url && (
-              <button type="button" onClick={() => { setUrl(''); setPlaylistInfo(null); setVideoJobs({}); setError(null) }}
+              <button type="button" onClick={() => { setUrl(''); setPlaylistInfo(null); setVideoJobs({}); setError(null); setAuthRequired(false) }}
                 style={{ position: 'absolute', right: '0.5rem', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#999', padding: '0.25rem', lineHeight: 1 }}
                 title="Clear URL"
               >&#10005;</button>
@@ -462,9 +468,17 @@ function VideoDownloadTool() {
             {fetchingInfo ? 'Fetching...' : 'Fetch Info'}
           </button>
         </div>
+        <div style={{ marginTop: '0.75rem' }}>
+          <CookiesButton />
+        </div>
       </form>
 
-      {error && <div style={{ color: '#d32f2f', padding: '0.75rem', backgroundColor: '#ffebee', borderRadius: '4px', marginTop: '1rem' }}>{error}</div>}
+      {error && (
+        <div style={{ color: '#d32f2f', padding: '0.75rem', backgroundColor: '#ffebee', borderRadius: '4px', marginTop: '1rem' }}>
+          <div>{error}</div>
+          {authRequired && <div style={{ marginTop: '0.75rem' }}><CookiesButton label="Add your YouTube cookies" /></div>}
+        </div>
+      )}
 
       {playlistInfo && (
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '1.5rem', padding: '1rem', backgroundColor: '#f5f5f5', borderRadius: '8px' }}>

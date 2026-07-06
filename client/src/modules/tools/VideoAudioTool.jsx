@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { CookiesButton } from './YtDlpCookiesDialog'
 
 const STORAGE_KEY = 'docscanner.videoAudioJob'
 const NEW_JOB_GRACE_MS = 30_000
@@ -103,6 +104,7 @@ function VideoAudioTool() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [detail, setDetail] = useState(initialJob ? 'Reconnecting to conversion...' : '')
   const [error, setError] = useState(initialState.storageError)
+  const [authRequired, setAuthRequired] = useState(false)
   const [removing, setRemoving] = useState(false)
 
   const forgetJob = useCallback(() => {
@@ -112,6 +114,7 @@ function VideoAudioTool() {
     setProgress(0)
     setUploadProgress(0)
     setDetail('')
+    setAuthRequired(false)
   }, [])
 
   const removeCurrentJob = useCallback(async () => {
@@ -182,6 +185,7 @@ function VideoAudioTool() {
         if (data.status === 'error') {
           setPhase('error')
           setError(data.error || 'Audio conversion failed.')
+          setAuthRequired(Boolean(data.authRequired))
           return
         }
 
@@ -219,7 +223,11 @@ function VideoAudioTool() {
       })
     }, 30_000)
     const data = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(data.error || 'Failed to start URL conversion.')
+    if (!response.ok) {
+      const requestError = new Error(data.error || 'Failed to start URL conversion.')
+      requestError.authRequired = Boolean(data.authRequired)
+      throw requestError
+    }
     setPhase('processing')
     setDetail('Downloading source video...')
   }
@@ -271,6 +279,7 @@ function VideoAudioTool() {
     event.preventDefault()
     if (submissionInFlight.current || job) return
     setError('')
+    setAuthRequired(false)
 
     if (sourceType === 'url' && !url.trim()) {
       setError('Enter a video URL to convert.')
@@ -337,10 +346,12 @@ function VideoAudioTool() {
       if (cleanupConfirmed) {
         forgetJob()
         setError(conversionError.message)
+        setAuthRequired(Boolean(conversionError.authRequired))
       } else {
         setPhase('processing')
         setDetail('Connection status is unknown. Reconnecting to the server...')
         setError(`${conversionError.message} The saved job was kept until the server confirms its status.`)
+        setAuthRequired(Boolean(conversionError.authRequired))
       }
     } finally {
       submissionInFlight.current = false
@@ -351,6 +362,7 @@ function VideoAudioTool() {
     if (nextType === sourceType || removing) return
     if (job && !(await removeCurrentJob())) return
     setSourceType(nextType)
+    setAuthRequired(false)
   }
 
   const handleUrlChange = async event => {
@@ -358,6 +370,7 @@ function VideoAudioTool() {
     if (removing) return
     if (job && nextUrl !== job.sourceUrl && !(await removeCurrentJob())) return
     setUrl(nextUrl)
+    setAuthRequired(false)
   }
 
   const handleFileChange = async event => {
@@ -381,6 +394,7 @@ function VideoAudioTool() {
     }
     setFile(nextFile)
     setError('')
+    setAuthRequired(false)
   }
 
   const isBusy = phase === 'uploading' || phase === 'processing'
@@ -431,6 +445,9 @@ function VideoAudioTool() {
               disabled={removing}
             />
             <span className="tool-hint">Changing this URL removes the previous conversion and its saved audio.</span>
+            <div style={{ marginTop: '0.75rem' }}>
+              <CookiesButton />
+            </div>
           </div>
         ) : (
           <div className="tool-input-group">
@@ -496,6 +513,7 @@ function VideoAudioTool() {
           <div className="tool-error" role="alert">
             <strong>Conversion error</strong>
             <span>{error}</span>
+            {authRequired && <div style={{ marginTop: '0.75rem' }}><CookiesButton label="Add your YouTube cookies" /></div>}
           </div>
         )}
 
