@@ -2279,11 +2279,6 @@ input:focus-visible {
 }
 
 /* Video to audio */
-.audio-converter {
-  max-width: 780px;
-  margin: 0 auto;
-}
-
 .audio-source-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
